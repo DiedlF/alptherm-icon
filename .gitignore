@@ -1,0 +1,43 @@
+# Data caches and outputs
+data/dem/*
+!data/dem/.gitkeep
+data/regions/*
+!data/regions/.gitkeep
+data/icon/*
+!data/icon/.gitkeep
+data/igc/*
+!data/igc/.gitkeep
+data/aggregates/*
+!data/aggregates/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Secrets
+.env
+.env.local
+*.key
+api_keys.yaml
