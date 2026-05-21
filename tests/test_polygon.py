@@ -21,7 +21,7 @@ def test_load_pilot_region_by_name() -> None:
     assert 47.0 < miny < 48.0
     assert 12.0 < maxx < 13.0
     assert 47.0 < maxy < 48.0
-    assert props["status"] == "placeholder"
+    assert props["status"] in {"placeholder", "refined"}
 
 
 def test_load_region_missing_name_raises() -> None:

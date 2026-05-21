@@ -9,6 +9,8 @@ data/igc/*
 !data/igc/.gitkeep
 data/aggregates/*
 !data/aggregates/.gitkeep
+data/basins/*
+!data/basins/.gitkeep
 
 # Python
 __pycache__/

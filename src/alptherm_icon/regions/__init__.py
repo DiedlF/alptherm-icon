@@ -6,14 +6,24 @@ Per plan §3:
 """
 
 from alptherm_icon.regions.ahd import AHDProfile, compute_ahd
+from alptherm_icon.regions.basins import (
+    basins_inside_bbox,
+    fetch_hydrobasins,
+    filter_north_of_inn,
+    select_basins,
+)
 from alptherm_icon.regions.dem import TileId, build_region_dem, tiles_for_geom
 from alptherm_icon.regions.polygon import load_region
 
 __all__ = [
     "AHDProfile",
     "TileId",
+    "basins_inside_bbox",
     "build_region_dem",
     "compute_ahd",
+    "fetch_hydrobasins",
+    "filter_north_of_inn",
     "load_region",
+    "select_basins",
     "tiles_for_geom",
 ]
