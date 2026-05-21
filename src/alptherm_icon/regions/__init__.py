@@ -6,6 +6,14 @@ Per plan §3:
 """
 
 from alptherm_icon.regions.ahd import AHDProfile, compute_ahd
+from alptherm_icon.regions.dem import TileId, build_region_dem, tiles_for_geom
 from alptherm_icon.regions.polygon import load_region
 
-__all__ = ["AHDProfile", "compute_ahd", "load_region"]
+__all__ = [
+    "AHDProfile",
+    "TileId",
+    "build_region_dem",
+    "compute_ahd",
+    "load_region",
+    "tiles_for_geom",
+]
