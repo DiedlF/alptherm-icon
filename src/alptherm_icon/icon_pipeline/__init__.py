@@ -8,3 +8,17 @@ profiles + spread measures (§4.3) per day per region.
 Build a rolling own archive starting day 1 (§4.5) — DWD Open Data only
 keeps a 2-day window.
 """
+
+from alptherm_icon.icon_pipeline.icon import (
+    IconD2File,
+    download_and_decompress,
+    extract_at_region,
+    fetch_surface_series,
+)
+
+__all__ = [
+    "IconD2File",
+    "download_and_decompress",
+    "extract_at_region",
+    "fetch_surface_series",
+]
