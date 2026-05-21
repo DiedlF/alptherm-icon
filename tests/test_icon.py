@@ -96,6 +96,59 @@ def test_extract_at_region_mean_two_value_field() -> None:
     assert float(region_mean) == pytest.approx(300.0)
 
 
+def test_icon_d2_file_model_level_filename() -> None:
+    """Model-level files: level NOT zero-padded per DWD convention."""
+    spec = IconD2File(
+        init=datetime(2026, 5, 21, 0),
+        lead_h=6,
+        var="t",
+        level_type="model-level",
+        level=10,
+    )
+    assert spec.filename_bz2 == (
+        "icon-d2_germany_regular-lat-lon_model-level_2026052100_006_10_t.grib2.bz2"
+    )
+    assert spec.url.endswith("/00/t/" + spec.filename_bz2)
+
+
+def test_icon_d2_file_model_level_single_digit_level() -> None:
+    spec = IconD2File(
+        init=datetime(2026, 5, 21, 0), lead_h=0, var="qv",
+        level_type="model-level", level=1,
+    )
+    assert "_000_1_qv.grib2.bz2" in spec.filename_bz2  # NOT _001_
+
+
+def test_icon_d2_file_time_invariant_hhl() -> None:
+    spec = IconD2File(
+        init=datetime(2026, 5, 21, 0), lead_h=0, var="hhl",
+        level_type="time-invariant", level=66,
+    )
+    assert spec.filename_bz2 == (
+        "icon-d2_germany_regular-lat-lon_time-invariant_2026052100_000_66_hhl.grib2.bz2"
+    )
+
+
+def test_icon_d2_file_rejects_level_on_single_level() -> None:
+    with pytest.raises(ValueError, match="level must be None for single-level"):
+        IconD2File(init=datetime(2026, 5, 21, 0), lead_h=0, var="t_2m", level=5)
+
+
+def test_icon_d2_file_requires_level_for_model_level() -> None:
+    with pytest.raises(ValueError, match="level required for model-level"):
+        IconD2File(
+            init=datetime(2026, 5, 21, 0), lead_h=0, var="t", level_type="model-level"
+        )
+
+
+def test_icon_d2_file_rejects_bad_level_type() -> None:
+    with pytest.raises(ValueError, match="level_type"):
+        IconD2File(
+            init=datetime(2026, 5, 21, 0), lead_h=0, var="t",
+            level_type="bogus", level=1,
+        )
+
+
 def test_extract_at_region_raises_when_no_cells_inside() -> None:
     ds = _make_synthetic_ds(np.zeros((20, 30)))
     region = box(100.0, 0.0, 101.0, 1.0)  # well outside the grid

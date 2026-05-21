@@ -10,15 +10,19 @@ keeps a 2-day window.
 """
 
 from alptherm_icon.icon_pipeline.icon import (
+    ICON_D2_N_FULL_LEVELS,
     IconD2File,
     download_and_decompress,
     extract_at_region,
+    fetch_profile,
     fetch_surface_series,
 )
 
 __all__ = [
+    "ICON_D2_N_FULL_LEVELS",
     "IconD2File",
     "download_and_decompress",
     "extract_at_region",
+    "fetch_profile",
     "fetch_surface_series",
 ]
