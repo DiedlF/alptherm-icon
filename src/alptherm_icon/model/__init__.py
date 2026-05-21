@@ -7,4 +7,39 @@ large-scale subsidence from ICON W.
 
 Internal time step ~2 min (§5.2). Output v(z,t) per region in 100 m × 30 min
 bins compatible with IGC binning.
+
+v0.1: bulk mixed-layer encroachment (single z_i evolution); no AHD-coupled
+bin-wise parcel theory yet. See model/mixed_layer.py.
 """
+
+from alptherm_icon.model.mixed_layer import (
+    CblStep,
+    cbl_top_from_cumulative_heat,
+    evolve_mixed_layer,
+)
+from alptherm_icon.model.thermo import (
+    C_P,
+    G,
+    KAPPA,
+    P_0,
+    R_D,
+    potential_temperature,
+    standard_pressure,
+    temperature_from_theta,
+    w_star,
+)
+
+__all__ = [
+    "C_P",
+    "CblStep",
+    "G",
+    "KAPPA",
+    "P_0",
+    "R_D",
+    "cbl_top_from_cumulative_heat",
+    "evolve_mixed_layer",
+    "potential_temperature",
+    "standard_pressure",
+    "temperature_from_theta",
+    "w_star",
+]
