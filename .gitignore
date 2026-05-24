@@ -13,6 +13,8 @@ data/basins/*
 !data/basins/.gitkeep
 data/model/*
 !data/model/.gitkeep
+data/archive/*
+!data/archive/.gitkeep
 
 # Python
 __pycache__/
