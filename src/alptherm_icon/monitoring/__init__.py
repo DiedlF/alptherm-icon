@@ -6,6 +6,12 @@ schreibende Komponenten kennen das Dashboard nicht, der Reader hängt nur
 am Filesystem.
 """
 
+from alptherm_icon.monitoring.alerter import (
+    Alert,
+    AlerterConfig,
+    check,
+    deliver,
+)
 from alptherm_icon.monitoring.heartbeat import (
     HeartbeatStatus,
     read,
@@ -14,4 +20,14 @@ from alptherm_icon.monitoring.heartbeat import (
     write,
 )
 
-__all__ = ["HeartbeatStatus", "read", "read_all", "status_path", "write"]
+__all__ = [
+    "Alert",
+    "AlerterConfig",
+    "HeartbeatStatus",
+    "check",
+    "deliver",
+    "read",
+    "read_all",
+    "status_path",
+    "write",
+]

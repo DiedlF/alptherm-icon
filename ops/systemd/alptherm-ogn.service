@@ -1,0 +1,29 @@
+[Unit]
+Description=ALPTHERM OGN APRS-Stream Mitschnitt (Plan §6.6 + §9.5)
+Documentation=https://github.com/alptherm-icon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Edit the four paths below for your install:
+WorkingDirectory=/root/.openclaw/workspace/alptherm-icon
+ExecStart=/root/.openclaw/workspace/alptherm-icon/.venv/bin/python -m alptherm_icon.ogn run
+Restart=always
+RestartSec=10
+# Send stdout/stderr to journal — `journalctl -u alptherm-ogn -f` to follow.
+StandardOutput=journal
+StandardError=journal
+# Limit log spam: APRS can emit thousands of lines/min if the filter is wrong.
+SyslogIdentifier=alptherm-ogn
+
+# Light hardening — non-essential but cheap. Keep filesystem writes scoped
+# to data/ogn and data/status under WorkingDirectory.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/root/.openclaw/workspace/alptherm-icon/data
+
+[Install]
+WantedBy=multi-user.target
