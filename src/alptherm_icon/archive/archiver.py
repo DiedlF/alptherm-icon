@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from alptherm_icon import monitoring
 from alptherm_icon.archive import manifest
 from alptherm_icon.archive.trigger import (
     TRIGGER_LEAD_RANGE,
@@ -224,9 +225,16 @@ def archive_tier1(
     paths = ArchiveRoot(root=root)
     paths.archive_dir.mkdir(parents=True, exist_ok=True)
     init_utc = manifest.iso_z(init)
+    hb_job = f"tier1-{init.hour:02d}"
 
     if manifest.has_record(paths.manifest_path, init_utc, "tier1") and not force:
         log.info("tier1 already recorded for %s — skipping", init_utc)
+        monitoring.write(
+            root=root,
+            job=hb_job,
+            status="skip",
+            extra={"init_utc": init_utc, "reason": "already_recorded"},
+        )
         return None
 
     log.info("tier1 start for %s", init_utc)
@@ -259,6 +267,22 @@ def archive_tier1(
         except Exception as exc:  # noqa: BLE001
             log.warning("zarr append failed for %s: %r", init_utc, exc)
 
+    # All-404 (e.g. run outside DWD's 48h window) is a defined failure
+    # mode: the row gets persisted but the heartbeat reflects it, so the
+    # dashboard and alerter can see the gap.
+    hb_status = "ok" if result.files_ok > 0 else "fail"
+    monitoring.write(
+        root=root,
+        job=hb_job,
+        status=hb_status,
+        extra={
+            "init_utc": init_utc,
+            "files_ok": result.files_ok,
+            "files_404": result.files_404,
+            "files_error": result.files_error,
+            "bytes_on_disk": result.bytes_on_disk,
+        },
+    )
     return record
 
 
@@ -305,6 +329,12 @@ def decide_tier2(
             "tier2_decision already recorded for target %s — skipping",
             target_init_utc,
         )
+        monitoring.write(
+            root=root,
+            job="tier2-decision",
+            status="skip",
+            extra={"target_init_utc": target_init_utc, "reason": "already_recorded"},
+        )
         return None
 
     # Self-fetch the small trigger subset. Idempotent w.r.t. a later full
@@ -317,6 +347,16 @@ def decide_tier2(
         lead_range=lead_range,
     )
     if not grib_paths:
+        monitoring.write(
+            root=root,
+            job="tier2-decision",
+            status="fail",
+            extra={
+                "target_init_utc": target_init_utc,
+                "decision_init_utc": decision_init_utc,
+                "reason": "no_trigger_inputs",
+            },
+        )
         raise FileNotFoundError(
             f"no trigger inputs available for {decision_init_utc} — "
             "check opendata.dwd.de reachability"
@@ -345,6 +385,17 @@ def decide_tier2(
         decision_init_utc=decision_init_utc,
     )
     manifest.append(record, paths.manifest_path)
+    monitoring.write(
+        root=root,
+        job="tier2-decision",
+        status="ok",
+        extra={
+            "target_init_utc": target_init_utc,
+            "decision_init_utc": decision_init_utc,
+            "fire": decision.fire,
+            "reason": decision.reason,
+        },
+    )
     return record
 
 
@@ -371,6 +422,12 @@ def download_pending_tier2(
     pending = manifest.pending_tier2_targets(paths.manifest_path)
     if not pending:
         log.info("no pending tier2 downloads")
+        monitoring.write(
+            root=root,
+            job="tier2-download",
+            status="skip",
+            extra={"pending": 0},
+        )
         return []
 
     written: list[manifest.ManifestRecord] = []
@@ -408,4 +465,18 @@ def download_pending_tier2(
             result.files_error,
             result.bytes_on_disk,
         )
+
+    total_ok = sum(r.files_ok for r in written)
+    total_bytes = sum(r.bytes_on_disk for r in written)
+    monitoring.write(
+        root=root,
+        job="tier2-download",
+        status="ok" if total_ok > 0 else "fail",
+        extra={
+            "targets": len(written),
+            "files_ok_total": total_ok,
+            "bytes_on_disk_total": total_bytes,
+            "last_target_utc": written[-1].init_utc if written else None,
+        },
+    )
     return written

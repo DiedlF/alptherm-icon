@@ -15,6 +15,8 @@ data/model/*
 !data/model/.gitkeep
 data/archive/*
 !data/archive/.gitkeep
+data/status/*
+!data/status/.gitkeep
 
 # Python
 __pycache__/

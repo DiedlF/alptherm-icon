@@ -30,6 +30,7 @@ import logging
 import sys
 from pathlib import Path
 
+from alptherm_icon import monitoring
 from alptherm_icon.archive import manifest
 from alptherm_icon.archive.archiver import (
     ArchiveRoot,
@@ -229,6 +230,18 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(
                 f"  target={p['init_utc']}  decided_from={p.get('decision_init_utc')}  "
                 f"reason={(p.get('trigger') or {}).get('reason')}"
+            )
+
+    # Heartbeat overview — one line per job, sorted alphabetically.
+    heartbeats = monitoring.read_all(root)
+    if heartbeats:
+        print(f"\nheartbeats ({len(heartbeats)} jobs):")
+        for hb in heartbeats:
+            success = hb.last_success_utc or "—"
+            print(
+                f"  {hb.job:<18s} status={hb.last_status:<5s} "
+                f"last_attempt={hb.last_attempt_utc}  last_ok={success}  "
+                f"since={hb.since_utc}"
             )
     return 0
 
