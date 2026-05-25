@@ -742,6 +742,60 @@ chunked, paralleler Zugriff auf Zeitreihen, ohne jedes GRIB-File einzeln zu öff
 Empfehlung: GRIB2 eingangsseitig als Rohformat behalten und täglich in ein wachsendes
 Zarr-Archiv anhängen.
 
+== 9.5 15-Min-Sub-Step-Auswertung (Phase 2 — post-M0)
+DWD publiziert vier konvektions-relevante Variablen mit 15-Min-Auflösung
+innerhalb der stündlichen GRIB-Dateien: CAPE_ML, TOT_PREC, HBAS_SC, HTOP_SC.
+M0 verwirft aktuell drei der vier Sub-Steps via `filter_by_keys={"step":
+lead_h}` und behält nur die Vollstunde — sonst entstünden Shape-Konflikte
+mit den stündlichen Variablen (ASOB_S, ASHFL_S, ALHFL_S, T_2M, …).
+
+Diese Asymmetrie ist die zentrale Designgrenze: das eigentliche
+*Forcing* (Strahlung, Wärmeströme) bleibt stündlich, nur die
+*Konvektions-State-Variablen* sind sub-hourly. Sinnvoll ist daher
+nicht, das Komp.-C-Modell auf 15-Min internen Time-Step zu ziehen
+(fake-Auflösung), sondern Sub-Step-Daten gezielt für Diagnostik,
+Onset-Detection und Tier-2-Triggerlogik zu nutzen.
+
+Vier konkrete Verbesserungen gegenüber Liechti 1993:
+
++ *Onset-Detection per Region (Komp. C / §7 Tuning):*
+  Liechti markiert den Thermik-Beginn heuristisch (Bodenfluss überschreitet
+  Schwelle). Mit 15-Min-HBAS_SC haben wir den beobachteten Onset direkt:
+  erste Slice, in der die Variable von NaN/0 auf einen Wert springt — auf
+  $plus.minus 7,5$ Min pinned statt ±30 Min beim 1h-Sampling. Tuning-Vorteil:
+  $T_0$ lässt sich gegen modell-beobachteten Onset fitten, nicht nur gegen
+  IGC-Frühaufsteher (vermeidet Selektion-Bias).
+
++ *Kurz- vs. Dauerregen-Klassifikator (Tier-2-Trigger, §9.2):*
+  Heutiges Beispiel: `precip_window = 50 mm` spatial-max über 6 h sieht nach
+  Gewittertag aus, ist aber typisch ein guter Flugtag mit lokalem
+  Nachmittags-Schauer. Mit 15-Min-TOT_PREC differenzieren wir: $<= 2$ von 24
+  Slices nass = *kurzer Schauer-Tag* (Flugtag); $> 6$ Slices nass = *Dauerregen*
+  (kein Flugtag). Klassifikation wandert als `day_class`-Feld ins Manifest.
+
++ *Sustained-Peak-Bedingung (Tier-2-Trigger):*
+  Aktuell feuert `cape_max > 100` schon bei einem einzigen Slice. Robuster:
+  CAPE > Schwelle in mindestens 3 aufeinanderfolgenden 15-Min-Slices
+  (entspricht 45 min Sustained-Konvektion). Reduziert False Positives durch
+  Mesoskalen-Spikes, die im Stunden-Mittel verschwinden würden.
+
++ *Front-/Konvergenz-Detektion (neuer Trigger-Branch):*
+  Liechtis 1D-Modell hat keine Frontphysik — kann den schärfsten Pre-Frontal-
+  Steigwert-Tag ($Delta z > 5$ km in 30 min) nicht erklären. Detektor: CAPE
+  springt $> 500$ J/kg innerhalb zweier benachbarter 15-Min-Slices.
+  Eigene Risikokategorie in der Tier-2-Sammlung — diese Tage sind für
+  Komp.-E-Validierung besonders wertvoll, da Liechti sie systematisch
+  unterschätzt.
+
+#note[
+  *Architekturkonsequenz:* M0 archiviert aktuell nur Vollstunden. Für
+  Phase 2 wird ein Mini-Zarr (`tier1_15min.zarr`) für die vier
+  Sub-Step-Variablen geführt — separat vom Stunden-Zarr, um die
+  Shape-Asymmetrie sauber zu kapseln. Aufwand pro Feature: 15–30
+  Zeilen Code. Aktivierung sobald 2–4 Wochen Archiv vorliegen und
+  die ersten Tunings auf Stundenbasis abgeschlossen sind.
+]
+
 // =============================================================================
 = 10. Zeitplan und Meilensteine
 // =============================================================================
