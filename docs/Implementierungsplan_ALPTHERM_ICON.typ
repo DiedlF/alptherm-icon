@@ -223,7 +223,7 @@ Gebiete garantieren.
   öffentlich nicht. Stufe 3 benötigt jedoch _keine_ echten Vorhersagen, sondern nur die
   räumliche _Klimatologie_ der Streuungsmuster. Stufe 3 wird daher von der operationellen
   Pipeline (Komp. B) entkoppelt und auf einen bereits existierenden Archiv-/Reanalyse-
-  Datensatz gestützt (siehe Anhang 12.4). Damit ist kein monatelanges Vorab-Sammeln
+  Datensatz gestützt (siehe Anhang 13.4). Damit ist kein monatelanges Vorab-Sammeln
   nötig — Stufe 3 ist sofort startbar.
 ]
 
@@ -366,7 +366,7 @@ Da der DWD Open Data Server nur ein 2-Tage-Fenster vorhält, sollte ab Tag 1 des
 ein eigener Cron-Job die benötigten ~15 Variablen für die Alpen-Bounding-Box täglich
 abgreifen und persistent speichern. Bis Komponente C steht, ist so bereits eine eigene
 Saison beisammen — ohne Abhängigkeit von Drittarchiven. Für die Historie davor dienen
-die externen Archive aus Anhang 12.4.
+die externen Archive aus Anhang 13.4.
 
 == 4.6 Operationeller Lauf-Rhythmus
 ICON-D2 (2.2 km) liefert 8 Läufe/Tag (00, 03, 06, 09, 12, 15, 18, 21 UTC), je +48 h,
@@ -584,6 +584,43 @@ Limits; ToS untersagen qualitativ nur "exzessive oder missbräuchliche" Nutzung.
 - *Inkrementelles Update* im laufenden Betrieb.
 - *Vorhandener Python-Client* (PyPI: WeGlide-Python-Client).
 
+== 6.6 OGN-Livedaten als ergänzende Validierungssäule
+Das Open Glider Network (OGN) trackt in Echtzeit Segelflugzeuge, Gleitschirme und
+weitere Luftfahrzeuge mit FLARM-/OGN-/FANET-Trackern. Es *ersetzt die IGC-Daten nicht*,
+sondern ergänzt sie — mit klarer Rollentrennung:
+- *WeGlide/IGC = Primärquelle* für Kalibrierung: saubere, vollständige, nachladbare Tracks von Segelflügen.
+- *OGN = ergänzend* für die datenarmen Hochgebirgsregionen und unabhängige Quervalidierung.
+
+#note[
+  *Warum OGN die IGC-Lücke schließt:* IGC-Daten clustern an Segelfluggeländen
+  (vgl. Kap. 8); gerade die fein verfeinerten Hochgebirgsregionen sind dünn besetzt.
+  Gleitschirme starten von Berghängen und fliegen in genau diesen steilen, hochgelegenen
+  Regionen, tiefer und näher am Hang. OGN-Gleitschirmdaten liefern daher Validierungs-
+  signal dort, wo das IGC-Sample fehlt — andere räumliche _und_ tageszeitliche Abdeckung.
+]
+
+=== Zugang:
+APRS-Stream über _aprs.glidernet.org_, Port 14580, mit serverseitigem Geo-Filter auf die
+Alpen. Fertige Clients in mehreren Sprachen (Python: _python-ogn-client_). Es wird
+*alles* mitgeschnitten (Segelflugzeuge _und_ Gleitschirme/FANET) — Segelflug-OGN erlaubt
+später eine unabhängige Quervalidierung gegen dieselben Flüge bei WeGlide (live vs.
+aufbereitet).
+
+=== Caveats:
+- *Rohdaten statt aufbereiteter Flüge:* nur Positionsstrom (Zeit, Lat/Lon, Höhe, Device-ID). Track-Zusammensetzung und Kreisflug-Detektion selbst — dieselbe Pipeline wie für IGC (6.2).
+- *Lückenhafte Bodenabdeckung:* hängt von freiwilligen Empfängern ab. In Mitteleuropa (CH/DE/AT) gut, aber Funkschatten in tiefen Tälern / hinter Graten — selbst räumlich verzerrt.
+- *Höhenreferenz:* OGN-Höhen aus GPS (teils ellipsoidisch). Für Basishöhen-Validierung sauber auf einheitliche Referenz umrechnen.
+- *Gleitschirm-Steigwerte ≠ Segelflug-Steigwerte:* Schirme kreisen enger/langsamer, andere Polare. Für _Luftmassen_-Steigen sogar vorteilhaft (weniger Eigensinkverfälschung), braucht aber eigene Umrechnungsannahme parallel zur Polare-Frage.
+- *Privacy / Datennutzungsregeln:* no-track-Flags respektieren, Device-IDs nicht mit Identitäten verknüpfen. Für anonymisierte, aggregierte Thermik-Statistik unkritisch.
+
+#note[
+  *Dringlichkeit — OGN ist ein flüchtiger Live-Stream:* Anders als IGC (quasi-permanent,
+  nachladbar) hält OGN keine vollständige Langzeit-Historie für beliebigen Abruf vor.
+  Wird der Stream nicht mitgeschnitten, sind die Daten weg — dieselbe Logik wie beim
+  ICON-Mitschnitt. Der OGN-Mitschnitt gehört daher zu den zeitkritischen
+  Sofortmaßnahmen (siehe Kap. 9 und M0).
+]
+
 // =============================================================================
 = 7. Komponente E — Validierung und Parametertuning
 // =============================================================================
@@ -668,10 +705,21 @@ sowohl Regionsdefinition (A) als auch Tuning (E).
 // =============================================================================
 = 9. Datenhaltungs- und Archivierungsstrategie
 // =============================================================================
-Die beiden Validierungs-Datenquellen haben fundamental unterschiedliche Vergänglichkeit:
-*sofort mit dem ICON-Mitschnitt beginnen, unabhängig vom Stand des Modellcodes.*
-- *IGC-Daten sind quasi-permanent:* WeGlide/OLC halten Flüge über Jahre — rückwirkend jederzeit ziehbar.
+Die Validierungs-Datenquellen ordnen sich nach *Vergänglichkeit, nicht nach Wichtigkeit*.
+Daraus folgt die zentrale Handlungsempfehlung: *die flüchtigen Live-Ströme sofort
+mitschneiden, unabhängig vom Stand des Modellcodes.*
+
+#tbl(
+  columns: (auto, auto, auto, 1fr),
+  header: ([Quelle], [Vergänglichkeit], [Dringlichkeit], [Charakter]),
+  ([ICON (DWD)], [~2 Tage], [sofort (M0)], [flüchtig, nicht nachladbar]),
+  ([OGN-Stream], [nur live], [sofort (M0)], [flüchtig, nicht nachladbar]),
+  ([IGC (WeGlide)], [quasi-permanent], [später], [nachladbar]),
+)
+
+- *IGC-Daten sind quasi-permanent:* WeGlide/OLC halten Flüge über Jahre — rückwirkend jederzeit ziehbar. Wichtiger fürs Tuning, aber unkritisch im Timing.
 - *ICON-Daten sind flüchtig:* Der DWD löscht nach ~2 Tagen. Jeder gute Thermiktag, der jetzt nicht als nativer GRIB2 mitgeschnitten wird, ist unwiederbringlich verloren.
+- *OGN-Stream ist flüchtig:* nur als Live-Feed verfügbar, keine vollständige Langzeit-Historie für Abruf. Wird er nicht mitgeschnitten, sind die Daten weg — dieselbe Logik wie bei ICON.
 
 == 9.1 Warum nicht rein selektiv nach IGC-Dichte archivieren
 Nur die guten Flugtage mitzuschneiden würde den Schönwetter-Bias aus Abschnitt 8
@@ -742,7 +790,127 @@ chunked, paralleler Zugriff auf Zeitreihen, ohne jedes GRIB-File einzeln zu öff
 Empfehlung: GRIB2 eingangsseitig als Rohformat behalten und täglich in ein wachsendes
 Zarr-Archiv anhängen.
 
-== 9.5 15-Min-Sub-Step-Auswertung (Phase 2 — post-M0)
+== 9.5 OGN-Mitschnitt — Rohdaten behalten, Live nur ergänzend
+Der OGN-APRS-Stream wird als dritte flüchtige Quelle ab Tag 1 mitgeschnitten (HomeServer,
+Sammlungsphase). Datenmäßig genügsam: APRS-Textmeldungen ~100–150 Bytes, exzellent
+komprimierbar (Faktor 10+, da hochrepetitiv). Über eine Saison nur wenige GB — kein
+Bandbreiten- oder Speicherthema, kein Nacht/Tag-Split wie bei ICON-Tier-2.
+
+#note[
+  *Rohdaten behalten, NICHT live-aggregieren:* Es ist verlockend, live auszuwerten und
+  nur die fertigen Steigwerte zu speichern. Das ist aber eine _irreversible_ Festlegung
+  auf Kreisflug-Parameter, Bin-Größe, Regionsgrenzen (die Stufe 3 erst iterativ
+  verfeinert!) und Höhenreferenz — getroffen, bevor das Modell existiert. Merkt man
+  später einen Bias, lässt sich das auf Rohdaten neu rechnen, auf Aggregaten nicht. Da
+  der Speicherbedarf vernachlässigbar ist, wäre Live-Aggregation eine
+  Informationsvernichtung ohne echten Gegenwert. Dieselbe Vergänglichkeitslogik wie beim
+  ICON-Archiv.
+]
+
+*Live-Auswertung als Zusatz (nicht als Ersatz):* Ein schlanker, _zustandsloser_
+Konsument hängt am selben Stream, speichert nichts Eigenes und liefert:
+- *Health-Monitoring:* Meldungsrate je Region — schlägt sofort Alarm, wenn der Mitschnitt abreißt (kritisch, sonst gehen unbemerkt Tage verloren).
+- *ICON-Tier-2-Trigger:* Live-OGN ist ein besserer Gut-Tag-Indikator als jede Modelldiagnostik — kreisen mittags bereits viele Schirme/Segelflugzeuge, _ist_ es offensichtlich ein guter Tag (verbessert den diagnostischen Trigger aus 9.2).
+- *Später (Produktiv-VPS):* Echtzeit-Abgleich Prognose vs. tatsächliches Steigen als Nowcasting-Korrektiv (Zukunftsmusik, gehört in die Produktivphase).
+
+Robuste Daemon-Hygiene nötig: Reconnect-Logik (APRS-Verbindungen brechen ab) und
+tägliche Logfile-Rotation, damit keine einzelne Datei vollläuft und der Stream nicht
+unbemerkt stillsteht.
+
+=== Logging-Spezifikation: roh behalten, nur Ablage strukturieren
+Es gibt zwei Sorten "Differenzieren" mit gegensätzlichem Charakter. *Erlaubt* (verlustfrei,
+nur Buchhaltung): Zeit-Partitionierung, geografischer Bbox-Filter (macht der APRS-Server
+ohnehin serverseitig). *Zu vermeiden* (trifft inhaltliche Vorentscheidung, bevor das
+Modell existiert): nach Luftfahrzeugtyp trennen, Status-/Receiver-Meldungen verwerfen,
+Felder herausparsen und nur Teilmenge behalten.
+
+#note[
+  *Warum roh behalten — drei konkrete Stolpersteine:* (1) Die *Typ-Klassifikation*
+  (Segelflug vs. Gleitschirm) im Paket ist notorisch fehlerbehaftet ("unknown"/falsche
+  Typen); die korrekte Zuordnung kommt teils erst über die OGN-Device-Database, die sich
+  ändert. Trennt man beim Logging nach Typ, sind spätere Korrekturen unmöglich. (2)
+  *Receiver-/Status-Beacons NICHT wegwerfen:* Sie sagen, welche Bodenstationen wann aktiv
+  waren — die Schlüsselinfo, um Funkschatten/Abdeckungslücken zu rekonstruieren. Ohne sie
+  lässt sich "keine Flüge in Region X" nicht von "kein Empfänger hörte zu" unterscheiden.
+  (3) Das finale Datenmodell (welche Felder gebraucht werden) steht erst, wenn die
+  Kreisflug-Detektion fertig ist.
+]
+
+Konkrete Empfehlung — *append-only Roh-Log, zeitpartitioniert, minimal angereichert:*
+- *Jede Zeile = eine rohe APRS-Meldung*, unverändert — Aircraft- _und_ Receiver-Beacons, nichts wird verworfen.
+- *Pro Zeile ein Empfangs-Zeitstempel* vorne angehängt (Ankunftszeit bei dir; weicht ggf. vom serverseitigen Paket-Zeitstempel ab, beide werden gebraucht).
+- *Zeitpartitioniert* in Tages- (oder Stunden-)Dateien, komprimiert (zstd/gzip, dank Repetitivität sehr effektiv).
+- *Roh-Format als Text/JSONL*, nicht vorgeparst in ein starres Schema.
+
+Erst in einem *zweiten, getrennten und reproduzierbaren Schritt* (Auswertung) werden
+Rohzeilen geparst, Typen klassifiziert, Aircraft von Receiver getrennt und Tracks
+abgeleitet. Das Roh-Log bleibt unangetastet — dieselbe Zwei-Stufen-Philosophie wie bei
+ICON (GRIB2 roh $->$ Zarr) und IGC (Files cachen $->$ Pipeline): *Rohschicht unveränderlich,
+Auswerteschicht reproduzierbar.*
+
+=== Zugang zum OGN-Stream — Spezifika
+Kein simpler HTTP-GET, sondern ein APRS-Protokoll-Dialog — mit dem offiziellen
+_python-ogn-client_ (PyPI, von glidernet) aber gut beherrschbar; er kapselt Login,
+Keep-Alive und Reconnect. Vier Punkte:
+- *Pool-DNS:* `aprs.glidernet.org` (bzw. `aprs-pool.glidernet.org`) ist ein DNS-Pool mit serverseitigem Load-Balancing — keine eigene Serverwahl nötig. Schwachpunkt: Bei DNS-Ausfall steht alles (daher Health-Check auf "kommen Daten an", nicht nur "Prozess läuft").
+- *Login receive-only:* anonymer Lesezugriff mit User `N0CALL` und Passcode `-1` (= nur empfangen, kein Transmit) — keine Registrierung, kein Rufzeichen nötig.
+- *Keep-Alive zwingend:* periodische Hash-Zeile zurücksenden, sonst trennt der Server. Der Client macht das automatisch — klassischer Stolperstein bei Eigenimplementierung.
+- *Geofilter Pflicht (Port 14580):* Range-Filter `r/lat/lon/radius` (Kreis). Da die Alpen-Bbox ein Rechteck ist: Radius großzügig wählen, dass die Bbox ganz abgedeckt ist, und beim Auswerten geografisch zuschneiden (erlaubte Filterung). *Keinen* Typ-Filter setzen — alles inkl. Receiver-Beacons behalten.
+
+#note[
+  *Direkter Stream, nicht die aggregierten APIs:* Neben dem rohen APRS-Stream gibt es
+  höher aggregierte API-Zugänge. Für vollständiges Roh-Logging ist der _direkte_
+  APRS-Stream richtig — die aggregierten APIs hätten bereits Vorentscheidungen getroffen
+  (Widerspruch zur Rohdaten-Philosophie oben). Der Client-Parser kann die Meldungen zwar
+  dekodieren, aber fürs Roh-Log werden die _unparsten_ Zeilen weggeschrieben; geparst wird
+  erst in der Auswerteschicht.
+]
+
+== 9.6 Speicher- und Maschinen-Architektur (Migration zum VPS-Zielzustand)
+Sammlung läuft auf dem HomeServer (9.3); der Zielzustand ist jedoch *alles auf einem
+VPS*. Der Speicherplatz ist dabei der kritische Punkt — nicht alle Datenklassen wachsen
+gleich:
+
+#tbl(
+  columns: (auto, 1fr, auto),
+  header: ([Datenklasse], [Verhalten], [Speicherdruck]),
+  ([Tier-2-ICON (volle Modelllevel)], [monoton wachsend, niemals löschbar], [hoch — der eigentliche Engpass]),
+  ([Tier-1-ICON-Forcing], [täglich, aber schlank], [moderat]),
+  ([OGN-Rohstream], [kontinuierlich, aber winzig (komprimiert)], [gering]),
+  ([IGC-Files], [kumulativ, aber klein], [gering]),
+  ([DEM / AHD / Geometrie], [statisch, einmalig], [vernachlässigbar]),
+  ([Aggregate / Modell-Output], [regenerierbar aus Rohdaten], [vernachlässigbar]),
+)
+
+#note[
+  *Schlüsseleinsicht — Archiv $!=$ Produktivbetrieb:* Das Produktivsystem braucht nur die
+  _aktuellen_ Daten (letzter ICON-Lauf für die heutige Prognose) — ein kleines,
+  rollierendes Fenster, das ständig überschrieben wird. Das _historische Archiv_
+  (Re-Validierung, neues Tuning) wächst monoton, wird aber nur sporadisch gebraucht, nicht
+  im Tagesbetrieb. Beide müssen daher nicht auf derselben teuren VPS-Blockplatte liegen.
+]
+
+*Empfohlener Zielzustand — VPS (klein, fix) + S3-Object-Storage (wachsend, billig):* Der
+VPS hält Produktivbetrieb plus ein rollierendes Arbeitsfenster auf kleiner lokaler Platte.
+Das wachsende Zarr-Archiv liegt in S3-kompatiblem Object Storage (Hetzner Storage Box,
+Backblaze B2, Cloudflare R2, Wasabi) — Größenordnung wenige Euro pro TB/Monat statt
+VPS-Blockspeicher-Preisen. Zarr ist cloud-nativ: chunked, partieller Netzwerkzugriff,
+sodass beim Tuning nur die benötigten Zeitscheiben über das Netz gelesen werden, ohne das
+ganze Archiv lokal zu halten (das Open-Climate-Fix-Archiv liegt aus genau diesem Grund auf
+S3). Aus Code-Sicht ist die Trennung nur ein Pfad-Präfix (`s3://archiv/...` statt
+`/local/...`).
+
+#note[
+  *Migration ohne Datenbruch:* Der HomeServer-Mitschnitt schreibt von Anfang an ins selbe
+  S3-Archiv. Beim VPS-Umzug ändert sich nichts an den Daten — nur die rechnende Maschine
+  wechselt. Die Daten waren nie an eine Maschine gebunden.
+]
+
+*Ergänzende Stellschrauben, falls das Tier-2-Volumen dennoch zu groß wird:*
+- *Eindampfen:* Nach der ersten Tuning-Phase ist bekannt, welche Modelllevel/Variablen das Modell nutzt — Tier 2 darauf reduzieren (Nachteil: verliert die Flexibilität für später unbedacht benötigte Variablen).
+- *Retention-Politik:* Letzte 2–3 Saisons im schnellen Zugriff, ältere Jahre als Kaltarchiv oder verwerfen. Ein Tuning auf 1–2 Saisons braucht kein Jahrzehnt-Vollarchiv.
+
+== 9.7 15-Min-Sub-Step-Auswertung (Phase 2 — post-M0)
 DWD publiziert vier konvektions-relevante Variablen mit 15-Min-Auflösung
 innerhalb der stündlichen GRIB-Dateien: CAPE_ML, TOT_PREC, HBAS_SC, HTOP_SC.
 M0 verwirft aktuell drei der vier Sub-Steps via `filter_by_keys={"step":
@@ -767,11 +935,12 @@ Vier konkrete Verbesserungen gegenüber Liechti 1993:
   IGC-Frühaufsteher (vermeidet Selektion-Bias).
 
 + *Kurz- vs. Dauerregen-Klassifikator (Tier-2-Trigger, §9.2):*
-  Heutiges Beispiel: `precip_window = 50 mm` spatial-max über 6 h sieht nach
-  Gewittertag aus, ist aber typisch ein guter Flugtag mit lokalem
-  Nachmittags-Schauer. Mit 15-Min-TOT_PREC differenzieren wir: $<= 2$ von 24
-  Slices nass = *kurzer Schauer-Tag* (Flugtag); $> 6$ Slices nass = *Dauerregen*
-  (kein Flugtag). Klassifikation wandert als `day_class`-Feld ins Manifest.
+  Aktuell ist `precip_window` der spatial-max über die gesamte Alpen-Bbox in
+  6 h. Eine einzelne Gewitterzelle treibt den Wert hoch, obwohl 95 % der
+  Bbox trocken sind. Mit 15-Min-TOT_PREC differenzieren wir: $<= 2$ von 24
+  Slices nass = *kurzer Schauer-Tag* (Flugtag mit lokalem
+  Nachmittagsschauer); $> 6$ Slices nass = *Dauerregen* (kein Flugtag).
+  Klassifikation wandert als `day_class`-Feld ins Manifest.
 
 + *Sustained-Peak-Bedingung (Tier-2-Trigger):*
   Aktuell feuert `cape_max > 100` schon bei einem einzigen Slice. Robuster:
@@ -797,12 +966,92 @@ Vier konkrete Verbesserungen gegenüber Liechti 1993:
 ]
 
 // =============================================================================
-= 10. Zeitplan und Meilensteine
+= 10. Monitoring-Dashboard
+// =============================================================================
+Ein poliertes, eigenes Frontend zur Überwachung der Archivierungs-Jobs (ICON + OGN), mit
+grober inhaltlicher Auswertung und einem Vereinsflugzeug-Tracker als Bonus.
+
+== 10.1 Architekturprinzip — reiner Leser
+Das Dashboard ist ein *reiner Leser*: es schreibt nie, triggert nie etwas, hält keinen
+eigenen Zustand. Es liest, was die Sammel-Jobs ohnehin produzieren, und stellt es dar.
+
+#note[
+  *Warum strikt lesend:* Stürzt das Dashboard ab oder wird neu gebaut, darf das die
+  Archivierung nie gefährden. Die Sammlung läuft autark, das Dashboard ist eine
+  Beobachtungsschicht obendrauf — die visuelle Erweiterung des zustandslosen Live-
+  Konsumenten aus 9.5. Der eigentliche Designpunkt ist daher nicht die Visualisierung,
+  sondern die *Heartbeat-/Status-Schicht* darunter: Die Sammel-Jobs müssen ihren Status
+  strukturiert wegschreiben (Status-JSON / SQLite / Zeitreihen-DB), wo das Dashboard ihn
+  findet.
+]
+
+== 10.2 Drei Überwachungs-Ebenen
+*Ebene 1 — Liveness (läuft die Maschinerie?).* Die kritischste Ebene, hier droht
+Datenverlust. Pro Job ein Heartbeat:
+- *ICON Tier-1:* Lief der letzte erwartete Lauf-Download? Zeitpunkt des letzten Erfolgs? Dateigröße plausibel (nicht 0 Bytes durch Teilausfall)?
+- *ICON Tier-2:* Wurde an Trigger-Tagen tatsächlich nachgeladen?
+- *OGN-Stream:* Kommen _gerade_ Daten an (Meldungsrate > 0, nicht nur "Prozess läuft" — der DNS-Ausfall-Fall)? Wann kam die letzte Meldung?
+
+#note[
+  *Erwartungslogik ist der Kern:* Das Dashboard muss wissen, was _hätte_ passieren sollen,
+  um Lücken zu erkennen. "06-UTC-Lauf um 06:15 UTC noch nicht da" ist okay; "um 09:00 UTC
+  immer noch nicht da" ist Alarm. Ohne Soll-Erwartung sieht man nur, was da ist, nicht was
+  fehlt — und Fehlendes ist das eigentliche Risiko.
+]
+
+*Ebene 2 — Bestandsübersicht (was habe ich gesammelt?).* Kumulative Archiv-Sicht:
+- Kalender-Heatmap: welche Tage/Läufe vollständig / lückenhaft / fehlend (Lücken springen sofort ins Auge).
+- Tier-2-Historie: getriggerte Tage, korreliert mit tatsächlicher Flugaktivität (war der Trigger richtig?).
+- Speicherverbrauch und Wachstumsrate (relevant für die VPS/S3-Migration aus 9.6 — wann wird es eng?).
+- OGN: Tagesvolumen, Anzahl eindeutiger Geräte pro Tag.
+
+*Ebene 3 — Inhaltliche Auswertung (was sagen die Daten?).* Thermik-relevante Vorschau:
+- Anzahl aktiver Luftfahrzeuge im OGN über den Tag (Tagesgang) — direkter Flugaktivitäts-Indikator.
+- Tier-2-Trigger-Status heute: hat CAPE/Einstrahlung die Schwelle überschritten?
+- Optional grobe Live-Karte: wo kreist gerade was?
+
+== 10.3 Bonus — Vereinsflugzeug-Tracking
+Eine Watchlist bekannter OGN-IDs der Vereinsflugzeuge. Pro Maschine: in der Luft? wo? wie
+lange? aktuelle Höhe? — plus kleine Live-Karte mit nur den eigenen Fliegern. Doppelter
+Nutzen:
+- *Als Feature:* unmittelbar attraktiv für den Verein, macht das Projekt sichtbar/greifbar — guter Motivator und Türöffner für spätere Vereinsunterstützung.
+- *Als Test-Instrument (der eigentliche Clou):* Eure Flugzeuge sind _kontrollierte Ground Truth_ — ihr kennt die wahren Flüge (Flugbuch).
+
+#note[
+  *Vereinsflugzeuge als OGN-Kalibrierwerkzeug:* (1) Erscheint die Maschine zuverlässig im
+  Stream, wenn sie fliegt? $->$ testet die OGN-Abdeckung in eurer Region konkret. (2)
+  Stimmen die OGN-Höhen mit Flugbuch/Logger überein? $->$ kalibriert das Höhenreferenz-
+  Caveat aus 6.6. (3) Werden die OGN-IDs korrekt aufgelöst? $->$ testet die Device-
+  Database-Zuordnung. Nebenbei entsteht so ein Datenqualitäts-Prüfstand an Flügen, deren
+  Wahrheit ihr kennt.
+]
+
+== 10.4 Technische Umsetzung
+Poliertes eigenes Frontend (kein Grafana). Empfohlen: schlankes Python-Backend (FastAPI)
+liefert Status-Endpunkte aus der Heartbeat-Schicht; Frontend als moderne SPA (z.B. React)
+oder — pragmatischer und enger mit dem Auswerte-Code verzahnt — Streamlit / Dash / Panel.
+Letztere eignen sich besonders für die Live-Karte und thermikspezifische Plots (Ebene 3 +
+Vereinskarte), da sie direkt auf den Python-Auswerte-Code zugreifen.
+
+#note[
+  *Alerting ist wichtiger als das Dashboard selbst:* Ein Dashboard schaut man nur an, wenn
+  man dran denkt. Ein Alert ("OGN-Stream seit 30 min still" per E-Mail / Telegram / ntfy)
+  erreicht einen, wenn es brennt. Für die flüchtigen Ströme ist das die eigentliche
+  Absicherung — das Dashboard ist die Kür, das Alerting die Pflicht. Auch mit poliertem
+  Frontend sollte ein unabhängiger, minimaler Alert-Pfad bestehen.
+]
+
+*Weiterführende Ideen:*
+- *Daten-Qualitäts-Metriken statt nur Liveness:* Empfänger-Anzahl pro Region im OGN über die Zeit — sinkt sie, verschlechtert sich die Abdeckung schleichend (Funkschatten-Caveat aus 6.6).
+- *Korrelations-Panel:* Tier-2-Trigger-Tage vs. tatsächliche OGN-Flugaktivität übereinandergelegt — validiert über die Saison, ob der Trigger gut kalibriert ist.
+
+// =============================================================================
+= 11. Zeitplan und Meilensteine
 // =============================================================================
 #tbl(
   columns: (auto, 1fr, auto, 1fr),
   header: ([Phase], [Inhalt], [Dauer], [Meilenstein]),
-  ([M0], [Archiv-Cronjobs (Kap. 9) — SOFORT], [1–2 Tage], [Tägl. ICON-Mitschnitt (00/03/06/09) + Tier-2-Trigger läuft]),
+  ([M0], [Archiv-Cronjobs (Kap. 9) — SOFORT], [1–2 Tage], [Tägl. ICON-Mitschnitt (00/03/06/09) + OGN-Stream-Mitschnitt + Tier-2-Trigger läuft]),
   ([M1], [Region & AHD (Komp. A)], [2 Wo.], [AHD-Profile für 20 Regionen]),
   ([M2], [ICON-Pipeline (Komp. B)], [3 Wo.], [Eine Region, eine Saison im Speicher]),
   ([M3], [Modellkern v0 (Komp. C)], [5 Wo.], [Reproduktion Liechti-Figs 3+4]),
@@ -811,15 +1060,18 @@ Vier konkrete Verbesserungen gegenüber Liechti 1993:
   ([M6], [Parameter-Tuning (Komp. E)], [4 Wo.], [Kalibrierte Parameter pro Region]),
   ([M7], [Multi-Region-Skalierung], [3 Wo.], [Gesamter Alpenraum operationell]),
   ([M8], [Dokumentation & Publikation], [2 Wo.], [Reproduzierbare Pipeline]),
+  ([Mon], [Monitoring-Dashboard (Kap. 10)], [iterativ], [Heartbeat-Schicht mit M0; Frontend wächst mit]),
 )
 
 Gesamtdauer ca. 25 Wochen netto. Bei Teilzeit entsprechend länger. M1, M2 und M4 sind
-parallelisierbar. *M0 hat höchste Priorität und läuft unabhängig vom übrigen Fortschritt*
-— jeder ungesammelte gute Thermiktag ist als nativer ICON-GRIB2 unwiederbringlich
-verloren (siehe Kap. 9).
+parallelisierbar. Das Monitoring-Dashboard (Mon) wächst iterativ: Die Heartbeat-Schicht
+entsteht zusammen mit M0 (die Sammel-Jobs schreiben von Anfang an Status weg), das
+polierte Frontend und die inhaltlichen Ebenen folgen schrittweise. *M0 hat höchste Priorität und läuft unabhängig vom übrigen Fortschritt*
+— jeder ungesammelte gute Thermiktag ist sowohl als nativer ICON-GRIB2 als auch als
+OGN-Live-Stream unwiederbringlich verloren (siehe Kap. 9).
 
 // =============================================================================
-= 11. Risiken und offene Fragen
+= 12. Risiken und offene Fragen
 // =============================================================================
 #tbl(
   columns: (1fr, 1fr),
@@ -833,21 +1085,22 @@ verloren (siehe Kap. 9).
 )
 
 // =============================================================================
-= 12. Anhang
+= 13. Anhang
 // =============================================================================
 
-== 12.1 Software-Stack (Vorschlag)
+== 13.1 Software-Stack (Vorschlag)
 Python 3.11+, Stack vollständig open source:
 - *Numerik:* numpy, scipy, xarray
 - *Geodaten:* geopandas, rasterio, shapely, pyproj
 - *Regionalisierung:* PySAL/spopt (max_p_regions, skater), HydroBASINS/EU-Hydro, Alpenkonvention-Perimeter als Maske
 - *NWP:* cfgrib (eccodes-Backend), herbie (DWD-Loader)
-- *IGC:* aerofiles oder eigener Parser; WeGlide-Python-Client (PyPI)
+- *IGC / Live:* aerofiles oder eigener Parser; WeGlide-Python-Client (PyPI); python-ogn-client für den OGN-APRS-Stream
 - *Optimierung:* scikit-optimize, optuna
 - *Visualisierung:* matplotlib, plotly, folium
+- *Dashboard (Kap. 10):* FastAPI-Backend (Status-Endpunkte); Frontend als React-SPA oder Streamlit/Dash/Panel; Kartendarstellung via MapLibre/Leaflet bzw. folium; Alerting per ntfy/Telegram/E-Mail
 - *Speicher:* Zarr für das wachsende ICON-Zeitreihenarchiv, NetCDF für einzelne Modelldaten, Parquet für Flugaggregate
 
-== 12.2 Referenzliteratur
+== 13.2 Referenzliteratur
 - Liechti, O. & Neininger, B. (1994): ALPTHERM — A PC-based model for atmospheric convection over complex topography. Technical Soaring 18(3), 73–78.
 - Liechti, O. (2002): Regtherm — Regional coupling of valley wind systems and sea breezes. OSTIV Publication.
 - Richter-Trummer, D. (2011): Verifikation des Grenzschichtmodells ALPTHERM anhand Flugdaten. Bachelorarbeit, Universität Innsbruck.
@@ -859,7 +1112,7 @@ Python 3.11+, Stack vollständig open source:
 - Duque, J.C. et al. (2012): The max-p-regions problem. J. Regional Science 52, 397–419.
 - DWD ICON Database Reference, Numerical Weather Prediction (opendata.dwd.de).
 
-== 12.3 Verzeichnisstruktur (Vorschlag)
+== 13.3 Verzeichnisstruktur (Vorschlag)
 #formula[
 alptherm-icon/ \
 ├── data/ \
@@ -879,7 +1132,7 @@ alptherm-icon/ \
 └── tests/
 ]
 
-== 12.4 Historische ICON-Daten — Archiv-Optionen
+== 13.4 Historische ICON-Daten — Archiv-Optionen
 Der DWD bietet kein Langzeitarchiv (nur 2-Tage-Fenster). Für Stufe-3-Klimatologie und
 Rück-Validierung:
 
@@ -898,7 +1151,7 @@ Rück-Validierung:
   dokumentieren.
 ]
 
-== 12.5 Nächster konkreter Schritt
+== 13.5 Nächster konkreter Schritt
 Empfehlung: Mit Komponente A für eine einzelne Pilotregion starten — z.B. das
 Unterinntal/Steinberge-Gebiet, das auch Richter analysiert hat. Vorteile: vorhandene
 Referenzdaten, überschaubarer Scope, sofort testbare Geometrie. Parallel den
