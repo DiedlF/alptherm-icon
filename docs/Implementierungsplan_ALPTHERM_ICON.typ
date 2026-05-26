@@ -309,22 +309,39 @@ Forecast-Schritte stündlich.
 )
 
 #note[
-  *ICON-D2 vs. ICON-EU Verfügbarkeit:* Die Namen oben folgen der allgemeinen
-  ICON-Konvention. Für ICON-D2 publiziert DWD Open Data einen Teil davon nicht;
-  im Code (Komp. B Archiv) werden folgende Substitute verwendet:
+  *ICON-D2 vs. ICON-EU Verfügbarkeit (per HTTP-Probe verifiziert,
+  Stand 2026):* Die beiden Modelle publizieren _nicht_ die gleichen
+  Variablen — eine direkte Folge der unterschiedlichen Auflösungen.
+  ICON-D2 (2,2 km) löst flache Cumulus-Konvektion explizit auf und
+  liefert dafür ``hbas_sc / htop_sc``; ICON-EU (7 km) ist dafür zu
+  grob, hat dafür die parametrisierte Tiefkonvektions-Diagnostik
+  ``hbas_con / htop_con``. Vier Variablen aus der ICON-Allgemein-
+  Literatur publiziert DWD bei _keinem_ der beiden Modelle.
 
   #tbl(
-    columns: (auto, auto, 1fr),
-    header: ([Plan-Name (ICON-EU)], [ICON-D2], [Substitut / Bemerkung]),
-    ([HPBL], [—], [*MH* (Mixed Layer Depth, m AGL) — bei konvektiver Tages-Grenzschicht $approx$ HPBL]),
-    ([HBAS_CON, HTOP_CON], [—], [kein direktes Pendant; hochreichende Konv. wird über TOT_PREC + CAPE_ML klassifiziert]),
-    ([LCL_ML], [—], [kein Pendant; HBAS_SC trägt vergleichbare Information (Cu-Basis $approx$ LCL)]),
-    ([TKE], [✓], [nur als Modelllevel-Profil (3D), nicht als Surface-Diagnostik — wandert in Tier 2]),
-    ([CIN_ML, HZEROCL], [✓], [verfügbar wie aufgelistet, wandern in Tier 1]),
+    columns: (auto, auto, auto, 1fr),
+    header: ([Variable], [ICON-D2 (2,2 km)], [ICON-EU (7 km)], [Bemerkung]),
+    ([T_2M, TD_2M, T_G, RELHUM_2M], [✓], [✓], [Bodennahe Standardfelder]),
+    ([ASOB_S, ATHB_S, ASHFL_S, ALHFL_S], [✓], [✓], [Strahlung + Wärmeströme (akkumuliert)]),
+    ([CLCT_MOD], [✓], [✓], [Bewölkungsgrad]),
+    ([CAPE_ML, CIN_ML, HZEROCL], [✓], [✓], [Konvektions-Diagnostik]),
+    ([TOT_PREC], [✓], [✓], [15-min-Sub-Steps bei D2, $S$9.7]),
+    ([HTOP_DC], [✓], [✓], [Trockenkonv.-Top — Blue-Day-Indikator]),
+    ([MH], [✓], [✓], [Mixed Layer Depth — Substitut für HPBL]),
+    ([HBAS_SC, HTOP_SC], [✓], [— *fehlt*], [Shallow conv. — explizit nur in D2 aufgelöst]),
+    ([HBAS_CON, HTOP_CON], [— *fehlt*], [✓], [Deep conv. — parametrisiert nur in EU]),
+    ([HPBL], [— *fehlt*], [— *fehlt*], [Plan-Name, real nicht publiziert → MH nutzen]),
+    ([LCL_ML], [— *fehlt*], [— *fehlt*], [nicht publiziert → HBAS_SC als Cu-Basis-Proxy]),
+    ([T, QV, U, V, W, TKE], [model-level], [model-level], [Tier-2-Profile]),
+    ([HHL], [time-invariant], [time-invariant], [Halbschichthöhen, 00-UTC-Init]),
   )
 
-  An Tagen, an denen ICON-EU zum Einsatz kommt (Tag 2–5), gelten die
-  originalen Variablennamen unverändert.
+  *Konsequenz für Komp. B:* Tier-1-Sammlung schreibt 17 Surface-Vars
+  (D2-Tageskandidat), Tier-2 zieht volle Modelllevel-Profile inkl.
+  TKE. EU-gestützte Tage (Tag 2–5) nutzen die EU-Spalte — ``HBAS_SC``
+  fällt dann weg, ``HBAS_CON`` kommt dazu. Das Auswerteschicht-Mapping
+  (Komp. C) muss beim Modellwechsel die richtige Konvektions-Variable
+  greifen.
 ]
 
 == 4.2 Pipeline-Schritte
@@ -621,6 +638,76 @@ aufbereitet).
   Sofortmaßnahmen (siehe Kap. 9 und M0).
 ]
 
+== 6.7 WeGlide × OGN Crossmapping
+WeGlide und OGN beschreiben oft _denselben_ Flug aus zwei
+unterschiedlichen Blickwinkeln — der eine als kuratierten, scoring-
+fähigen Track mit Pilot- und Maschinen-Metadaten, der andere als
+zeitlich-feiner Position-Stream ohne Identität. Eine systematische
+Zuordnung der beiden Quellen liefert drei eigenständige Werte und
+sollte daher von Beginn an mitgeplant werden.
+
+=== Drei Zwecke der Zuordnung:
++ *Deduplizierung im Tuning-Sample:* Wenn ein WeGlide-Flug von Aircraft X
+  zur Zeit T mit einem OGN-Track von FLARM-ID Y kollidiert (gleicher
+  Ort, gleiche Zeit, ähnliche Geometrie), dann _ist_ es derselbe Flug.
+  Würden wir beide unabhängig in die Tuning-Statistik einspeisen, hätten
+  wir Doppelgewichtung. Das Crossmapping markiert die Paare und lässt
+  Komp. E pro Flug nur eine Quelle (die mit höherer Datenqualität:
+  WeGlide-IGC mit 1-Sekunden-Track) nutzen, ohne das jeweils andere zu
+  verwerfen.
++ *Validierung der WeGlide-Notwendigkeit:* Vor M5 ist offen, ob OGN
+  eine WeGlide-Abdeckung _allein_ ersetzen könnte. Erst nach 1–2
+  Wochen paralleler Sammlung können wir empirisch sagen: "X % der
+  Alpenflüge erscheinen in beiden, Y % nur in WeGlide, Z % nur in OGN".
+  Das ist die einzige verlässliche Antwort auf die Frage, ob der
+  WeGlide-API-Zugang (mit ToS-Aufwand, siehe 6.5) wirklich nötig ist
+  oder ob OGN-Roh-Logs ausreichen.
++ *Coverage-Gap-Detektion:* WeGlide hat Flüge, die OGN aufgrund von
+  defektem FLARM, ausgeschaltetem Transponder oder Funkschatten nicht
+  gesehen hat — und _umgekehrt_, OGN sieht Aircraft ohne WeGlide-Upload
+  (Privatpiloten ohne Account, ältere Geräte ohne Auto-Upload). Beide
+  Differenzmengen sind diagnostisch wertvoll (siehe nächster Abschnitt).
+
+=== Zuordnungsweg:
+WeGlide-API liefert pro Flug die Aircraft-Registration ("D-1234"), oft
+auch ICAO-Hex oder FLARM-ID als Metadatum. OGN-Beacons tragen die
+APRS-Sender-ID (``FLR<DDDDDD>``, ``ICA<HEX>``, ``OGN<...>``) und sind
+über die freie *OGN Device Database*
+(``ddb.glidernet.org``) auf Registrierungen abbildbar. Das ergibt eine
+3-stufige Pipeline:
+
+#tbl(
+  columns: (auto, 1fr, 1fr),
+  header: ([Stufe], [Methode], [Robust gegen]),
+  ([1 — direkt], [WeGlide-Aircraft-ID vs. OGN-Device-DB], [glatter Fall: registrierte FLARM-IDs]),
+  ([2 — Zeit+Ort], [Track-Overlap-Score (≥ 80 % räumlich-zeitlich)], [Device-DB unvollständig oder OGN-ID privat]),
+  ([3 — manuell], [Verein-spezifische Watchlist (Plan §10.3)], [nichts findet — Hand-Mapping als letztes Mittel]),
+)
+
+Die DB-Tabelle in Stufe 1 wird einmal pro Woche aktualisiert
+(``ddb.glidernet.org/download/?j=1`` als JSON). Stufe 2 fängt den
+Long-Tail, der häufiger ist als man denkt: ~30 % der Aircraft setzen
+ihre OGN-ID auf "privat" (``no-track``-Flag respektieren wir natürlich,
+aber das Track-Overlap funktioniert trotzdem auf den anonymisierten
+Daten, weil wir nur _existenz_ feststellen).
+
+=== "FLARM-loses" Subsample — die WeGlide-only-Flüge
+Die Differenzmenge _WeGlide ∖ OGN_ ist besonders diagnostisch:
+- *Defektes / abgeschaltetes FLARM*: Aircraft hat geflogen (in WeGlide,
+  via IGC-Logger nachvollziehbar), aber OGN sieht nichts → klare
+  Empfehlung an den Piloten/Werkstatt.
+- *Funkschatten / Coverage-Lücke*: Aircraft fliegt in einer Region ohne
+  OGN-Empfängerabdeckung. Reichweiten-Analyse aus 10.3.x. Tritt der
+  Schatten systematisch in derselben Talregion auf, lohnt sich ein
+  zusätzlicher Empfänger.
+- *Außerhalb der Alpen-Bbox*: WeGlide trackt Flüge weltweit, OGN-
+  Mitschnitt ist auf Alpen-Geofilter beschränkt. Erwartete Differenz,
+  kein Issue.
+
+Im Dashboard erscheint dieses Subsample als eigene Liste auf der
+Vereinsflug-Seite (10.3) — pro vermisstem Flug Datum, Route, vermutete
+Ursache.
+
 // =============================================================================
 = 7. Komponente E — Validierung und Parametertuning
 // =============================================================================
@@ -676,6 +763,43 @@ topographischer Strukturen aufteilen.
 - RMSE der Basishöhe vs. HBAS_SC < 200 m
 - Klassifikationsgüte Tagestypen (Cu/Blue/Gewitter) > 85% gegen IGC-Realität
 - Saisonale Bias-Stabilität: kein Trend April–September
+
+== 7.6 Thermik-Statistik pro ALPTHERM-Region
+Über das punktuelle Tuning hinaus liefert die Aggregation aller
+detektierten Kreisflüge pro Region eine eigene Auswerteachse —
+sowohl als Diagnose-Werkzeug für 7.3 (Streuungs-Quelle) als auch als
+Endkunden-Feature für die Webdarstellung.
+
+=== Was wird pro Region aggregiert:
++ *Anzahl detektierter Thermik-Zentren* pro Tag, Monat, Saison —
+  primäres "Dichte"-Maß. Quelle: Kreisflug-Detektion aus 6.2 auf
+  IGC- _und_ OGN-Tracks zusammen (per 6.7 dedupliziert).
++ *Median- und Q90-Steigwerte* je Tageszeit-Bin (z.B. 09–11 / 11–13 /
+  13–15 / 15–17 UTC) — direkter Tuning-Target-Input für Bart-Skalierung
+  und Tagesgang-Form ($Delta T_0$, $P_0$).
++ *Höhenverteilung der Kreisflüge* — Basishöhe und Topphöhe als
+  Boxplot pro Region. Dient als ICON-unabhängige Plausibilitäts-
+  Referenz zu HBAS_SC / HTOP_DC.
++ *Saisonale Häufigkeitsprofile* — wann ist diese Region "auf" und
+  wann tot. Validiert die Region als überhaupt fluggeeignet (Eingangs-
+  Kriterium für 8.2 Tuning-Sample-Auswahl).
++ *Anteil Blue-Day-Flüge vs. Cu-Tag-Flüge* — Korrelation mit dem 9.2-
+  Trigger, also Validierung der Trigger-Klassifikation aus 7.2.
+
+=== Ausgabeformate:
+- *Pro-Region-Steckbrief* als ein PDF/HTML pro Region — schnell teilbar
+  mit Vereinen, die ihr Hausgebiet sehen wollen.
+- *Vergleichs-Heatmap* auf dem Dashboard (Plan §10): Y-Achse Region,
+  X-Achse Tageszeit, Farbe Median-Steigwert. Zeigt sofort, welche
+  Regionen früh bzw. lange aktiv sind.
+- *Long-Term-Trend* (mehrere Saisons): wandert das Q90-Steigen pro
+  Region über die Jahre? Klimasignal oder Pilot-/Geräte-Drift?
+
+=== Wann sinnvoll:
+Frühestens nach einer Saison vollständigen Mitschnitts (siehe 8.2 zur
+nutzbaren Schnittmenge). M5 ist der natürliche Zeitpunkt — Komp. D
+(Kreisflug-Detektion) muss fertig sein, beide Datenquellen (IGC + OGN)
+mindestens 3 Monate gesammelt.
 
 // =============================================================================
 = 8. Datenverfügbarkeits-Asymmetrie (Querschnittsthema A ↔ E)
@@ -866,6 +990,39 @@ Keep-Alive und Reconnect. Vier Punkte:
   erst in der Auswerteschicht.
 ]
 
+=== Aggregat-Sidecar-Schicht (Phase-2-Speedup, post-M0)
+Das Dashboard scannt aktuell das gzipped Roh-Tagesfile bei jedem
+Cache-Miss — auf einem Vollzeitarbeitsfile (~1 GB komprimiert, ~25 M
+Zeilen) ~20–45 s. Hot-Path-Tuning in v0.5 (pigz + chunked-bytes +
+Regex-direct) hat das halbiert; eine zweite Stufe drückt es unter eine
+Sekunde, ohne die Rohschicht zu verletzen.
+
+*Mechanismus:* Ein eigener Cron-Job ``ogn-aggregate`` läuft alle 5
+Minuten, liest die seit dem letzten Lauf neu hinzugekommenen
+Zeilen (über Datei-Offset, da gzip _append-only_) und führt zwei
+Sidecar-Dateien neben dem Roh-Log fort:
+- ``data/ogn/aggregates/YYYY-MM-DD.hourly.json`` — vorberechnete
+  Aircraft-Count + Paketzahlen pro UTC-Stunde (Plan §10.2 Ebene 3).
+- ``data/ogn/aggregates/YYYY-MM-DD.positions.parquet`` — letzte
+  bekannte Position + Climb-Rate pro Aircraft-ID. Parquet wegen
+  Column-Pruning beim Dashboard-Query (nur eine Spalte je Diagramm).
+
+Dashboard wechselt seine Loader auf die Sidecars; Vollscan nur noch
+beim historischen Backfill nötig (einmalig pro Tag). Trennung
+Rohschicht / Auswerteschicht aus 9.5 explizit bewahrt: Aggregate sind
+_jederzeit_ aus Rohlog reproduzierbar, Aggregator-Bug ist heilbar
+durch Neulauf.
+
+=== Tail-only-Scan für Live-Daten
+Für den Vereinsflug-Tracker (Plan §10.3) interessiert uns nur die
+_letzte_ Position pro Aircraft, nicht der Tagesverlauf. Der Vollscan
+verschwendet 95 % der Zeit auf Daten von vor mehreren Stunden.
+Tail-Strategie: nur die letzten ~100 MB des Tages-Gzip lesen (~15 Min
+Live-Daten bei 160 Paketen/s). Implementierungsdetail: ``pigz -dc``
+nach ``tail -c 100M``-Pipe, dann Roh-Lines ab dem ersten ``\n`` nach
+Pipe-Start. Erwarteter Effekt: Vereinsflug-Seite < 2 s statt 20 s,
+auch ohne Aggregator.
+
 == 9.6 Speicher- und Maschinen-Architektur (Migration zum VPS-Zielzustand)
 Sammlung läuft auf dem HomeServer (9.3); der Zielzustand ist jedoch *alles auf einem
 VPS*. Der Speicherplatz ist dabei der kritische Punkt — nicht alle Datenklassen wachsen
@@ -909,6 +1066,27 @@ S3). Aus Code-Sicht ist die Trennung nur ein Pfad-Präfix (`s3://archiv/...` sta
 *Ergänzende Stellschrauben, falls das Tier-2-Volumen dennoch zu groß wird:*
 - *Eindampfen:* Nach der ersten Tuning-Phase ist bekannt, welche Modelllevel/Variablen das Modell nutzt — Tier 2 darauf reduzieren (Nachteil: verliert die Flexibilität für später unbedacht benötigte Variablen).
 - *Retention-Politik:* Letzte 2–3 Saisons im schnellen Zugriff, ältere Jahre als Kaltarchiv oder verwerfen. Ein Tuning auf 1–2 Saisons braucht kein Jahrzehnt-Vollarchiv.
+- *OGN-aktivitätsbasierte Retention (post-hoc):* Der Tier-2-Trigger
+  läuft um 12 UTC und hat zu dem Zeitpunkt nur ICON-Diagnostiken, kein
+  Wissen über tatsächliche Flugaktivität. _Nach_ dem Tag wissen wir
+  aus dem OGN-Log, wie viele Aircraft tatsächlich konvektiv aktiv
+  waren — Gewittertage mit hoher CAPE aber Null OGN-Flügen in der
+  Alpen-Bbox sind im Nachhinein klassifizierbar als Schlecht-Wetter-
+  Trigger-Fehler und bevorzugt zur Ausdünnung geeignet.
+
+  Konkret: pro fired Tier-2-Decision wird _am Folgetag_ aus den
+  Aggregaten (9.5.x) ein ``ogn_activity_score`` berechnet (Anzahl
+  distinct Aircraft in der Bbox zwischen 09–16 UTC). Tier-2-Datensätze
+  mit Score < N (z.B. < 200 distinct Aircraft, was einem deutlichen
+  Schlechtwettertag entspricht) werden als _Kaltarchiv-Kandidaten_
+  markiert. Nach 2 Jahren werden niedrig-Score-Tage gelöscht oder
+  nach S3-Glacier verschoben.
+
+  *Caveat:* Schlechtwetter-Tier-2-Profile sind nicht wertlos — sie
+  helfen, das Modell auch in marginalen Situationen zu testen. Daher
+  _bevorzugte_ statt _automatische_ Ausdünnung. Die Information
+  bleibt im Manifest erhalten ("dieser Tag wurde getriggert, aber
+  niedrige OGN-Aktivität"), nur das GRIB-Volumen geht.
 
 == 9.7 15-Min-Sub-Step-Auswertung (Phase 2 — post-M0)
 DWD publiziert vier konvektions-relevante Variablen mit 15-Min-Auflösung
@@ -990,7 +1168,16 @@ eigenen Zustand. Es liest, was die Sammel-Jobs ohnehin produzieren, und stellt e
 Datenverlust. Pro Job ein Heartbeat:
 - *ICON Tier-1:* Lief der letzte erwartete Lauf-Download? Zeitpunkt des letzten Erfolgs? Dateigröße plausibel (nicht 0 Bytes durch Teilausfall)?
 - *ICON Tier-2:* Wurde an Trigger-Tagen tatsächlich nachgeladen?
-- *OGN-Stream:* Kommen _gerade_ Daten an (Meldungsrate > 0, nicht nur "Prozess läuft" — der DNS-Ausfall-Fall)? Wann kam die letzte Meldung?
+- *OGN-Stream (eingehend):* Kommen _gerade_ Daten an (Meldungsrate > 0, nicht nur "Prozess läuft" — der DNS-Ausfall-Fall)? Wann kam die letzte Meldung?
+- *OGN-Empfänger Flugplatz (Heimstation):* Sendet die _eigene_ Bodenstation
+  noch Status-Beacons? OGN-Receiver senden periodisch eigene
+  Receiver-Beacons (``...> APRS,TCPIP*,qAC,GLIDERN3:>...``) mit
+  Uhrzeit, gehörtem Aircraft-Count und Empfangs-CPU-Last. Wenn die
+  eigene Station mehrere Minuten keinen Beacon sendet, ist sie
+  selbst aus (Strom/Internet/Antenne defekt) — _bevor_ man das im
+  Datenausfall am Boden bemerkt. Eigener Heartbeat-Eintrag
+  ``ogn-receiver-home`` mit Filter auf die eigene Call-Sign aus der
+  OGN-DB; Threshold 10 min (Beacons kommen typisch alle 5 min).
 
 #note[
   *Erwartungslogik ist der Kern:* Das Dashboard muss wissen, was _hätte_ passieren sollen,
@@ -1025,6 +1212,32 @@ Nutzen:
   Database-Zuordnung. Nebenbei entsteht so ein Datenqualitäts-Prüfstand an Flügen, deren
   Wahrheit ihr kennt.
 ]
+
+=== Reichweiten-Analyse pro Vereinsflugzeug
+Jede APRS-Beacon trägt den empfangenden Receiver in der ``qAS,<receiver>``-
+Pfadangabe. Damit lässt sich pro Aircraft eine _Empfangs-Wolke_
+zeichnen: für jeden Beacon den Vektor (Aircraft-Position, Receiver-
+Position aus OGN-DB) als Empfangs-Strahl darstellen.
+
+Drei eigenständige Auswertungen aus derselben Datenbasis:
+- *Sicht aus Aircraft-Perspektive:* Wo (Lat/Lon/Höhe) wird die Maschine
+  noch empfangen? Polare als Karte / Tortendiagramm. Heatmap der
+  Empfangs-Punkte zeigt sofort Funkschatten-Linien (z.B. „hinter dem
+  Hauptkamm kein Empfang").
+- *Sicht aus Receiver-Perspektive (umgekehrt):* welche Aircraft hat ein
+  _bestimmter_ Empfänger gehört? Bei der eigenen Station ergibt das
+  die _eigene_ Empfangs-Sichtbarkeitsglocke — Antenneneffizienz,
+  blockierende Hindernisse, Höhenabdeckung. Direkt actionable: wenn
+  Lücken auf einer Himmelsrichtung systematisch sind, neuer
+  Antennenstandort prüfen.
+- *Coverage-Lücke pro Region:* In welcher ALPTHERM-Region hat _kein_
+  Empfänger Aircraft gehört, obwohl WeGlide Flüge dort verzeichnet
+  (siehe 6.7)? Diese Regionen sind systematisch im OGN-Sample
+  unterrepräsentiert — wichtige Information für die Tuning-Sample-
+  Gewichtung in 8.2.
+
+Die ersten beiden landen als Toggle auf der Vereinsflug-Seite, die
+dritte als Heatmap-Overlay auf der Bestand-Seite (Ebene 2).
 
 == 10.4 Technische Umsetzung
 Poliertes eigenes Frontend (kein Grafana). Empfohlen: schlankes Python-Backend (FastAPI)
