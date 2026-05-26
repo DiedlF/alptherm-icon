@@ -246,6 +246,148 @@ def load_zarr_timeseries(
     return pd.DataFrame(rows)
 
 
+@dataclass
+class WatchlistEntry:
+    """One row in the user-maintained ``data/watchlist.json``."""
+
+    name: str  # human-readable display name
+    ogn_name: str  # APRS sender ID, e.g. "FLRDDDD24" or "ICA3F5AB7"
+    note: str = ""
+
+
+@dataclass
+class WatchlistPosition:
+    """Latest known position for one watchlist entry on a given day."""
+
+    entry: WatchlistEntry
+    last_seen_utc: dt.datetime | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    altitude_m: float | None = None
+    climb_rate: float | None = None
+    ground_speed_kmh: float | None = None
+    track: float | None = None  # degrees
+    aircraft_type: int | None = None
+    packets_today: int = 0
+
+
+def load_watchlist(root: Path) -> list[WatchlistEntry]:
+    """Read ``data/watchlist.json`` if it exists; return empty list otherwise."""
+    import json
+
+    path = root / "data" / "watchlist.json"
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    out: list[WatchlistEntry] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if "name" not in item or "ogn_name" not in item:
+            continue
+        out.append(
+            WatchlistEntry(
+                name=str(item["name"]),
+                ogn_name=str(item["ogn_name"]),
+                note=str(item.get("note", "")),
+            )
+        )
+    return out
+
+
+def load_watchlist_positions(
+    root: Path,
+    day: dt.date | None = None,
+) -> list[WatchlistPosition]:
+    """Latest position per watchlist entry from the given day's raw log.
+
+    Strategy: substring-prefilter on the raw APRS line (cheap), parse
+    only the hits with ``ogn-parser``. With ~25 M packets/day and a
+    typical club watchlist of <20 aircraft, the full pass takes a few
+    seconds — acceptable behind a 60 s cache.
+    """
+    import gzip
+    import json as _json
+
+    from ogn.parser import parse as ogn_parse
+    from ogn.parser.exceptions import AprsParseError
+
+    watchlist = load_watchlist(root)
+    if not watchlist:
+        return []
+
+    name_to_position: dict[str, WatchlistPosition] = {
+        e.ogn_name: WatchlistPosition(entry=e) for e in watchlist
+    }
+    interesting_bytes = [n.encode("ascii") for n in name_to_position.keys()]
+
+    inventory = load_ogn_inventory(root)
+    if not inventory:
+        return list(name_to_position.values())
+    stats = (
+        next((s for s in inventory if s.day == day), None)
+        if day is not None
+        else inventory[-1]
+    )
+    if stats is None:
+        return list(name_to_position.values())
+
+    # Performance: with ~25 M lines/day, line-iteration is the bottleneck.
+    # We open in binary mode and substring-prefilter before json.loads —
+    # only candidate lines pay the parse cost. A full scan still takes
+    # ~50 s for a busy day, so the dashboard caches calls aggressively
+    # (TTL = 120 s) and shows a spinner on first load. A future
+    # optimisation (chunked regex over the decompressed stream) is
+    # worthwhile but out of scope for the v0.4 dashboard milestone.
+    try:
+        with gzip.open(stats.path, "rb") as fh:
+            for line_bytes in fh:
+                if not any(s in line_bytes for s in interesting_bytes):
+                    continue
+                try:
+                    rec = _json.loads(line_bytes)
+                except _json.JSONDecodeError:
+                    continue
+                raw = rec.get("raw", "")
+                try:
+                    parsed = ogn_parse(raw)
+                except (AprsParseError, ValueError):
+                    continue
+                if not parsed:
+                    continue
+                name = parsed.get("name")
+                if name not in name_to_position:
+                    continue
+                slot = name_to_position[name]
+                slot.packets_today += 1
+                if parsed.get("aprs_type") != "position":
+                    continue
+                ts_recv_raw = rec.get("ts_recv", "")
+                try:
+                    ts_recv = dt.datetime.strptime(
+                        ts_recv_raw[:19] + "Z", "%Y-%m-%dT%H:%M:%SZ"
+                    ).replace(tzinfo=dt.timezone.utc)
+                except ValueError:
+                    ts_recv = None
+                slot.last_seen_utc = ts_recv
+                slot.latitude = parsed.get("latitude")
+                slot.longitude = parsed.get("longitude")
+                slot.altitude_m = parsed.get("altitude")
+                slot.climb_rate = parsed.get("climb_rate")
+                slot.ground_speed_kmh = parsed.get("ground_speed")
+                slot.track = parsed.get("track")
+                slot.aircraft_type = parsed.get("aircraft_type")
+    except EOFError:
+        pass
+
+    return list(name_to_position.values())
+
+
 def load_ogn_hourly_activity(
     root: Path,
     day: dt.date | None = None,

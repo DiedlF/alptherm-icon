@@ -19,6 +19,7 @@ data/status/*
 !data/status/.gitkeep
 data/ogn/*
 !data/ogn/.gitkeep
+data/watchlist.json
 
 # Python
 __pycache__/
