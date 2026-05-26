@@ -1,0 +1,35 @@
+[Unit]
+Description=ALPTHERM-ICON Monitoring Dashboard (Streamlit, Plan §10)
+Documentation=https://github.com/alptherm-icon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Edit the paths below for your install:
+WorkingDirectory=/root/.openclaw/workspace/alptherm-icon
+ExecStart=/root/.openclaw/workspace/alptherm-icon/.venv/bin/streamlit run \
+  /root/.openclaw/workspace/alptherm-icon/src/alptherm_icon/dashboard/app.py \
+  --server.port=8501 \
+  --server.address=0.0.0.0 \
+  --server.headless=true \
+  --browser.gatherUsageStats=false \
+  --server.fileWatcherType=none
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=alptherm-dashboard
+
+# Reader-only — never writes archive data; only Streamlit's own cache dirs.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+# Streamlit's hot-reload watches the source tree; we run with file-watcher
+# disabled so the dashboard doesn't poll, but we still allow Streamlit's
+# config/cache writes under the project tree.
+ReadWritePaths=/root/.openclaw/workspace/alptherm-icon
+
+[Install]
+WantedBy=multi-user.target
