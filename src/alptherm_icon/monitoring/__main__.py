@@ -56,9 +56,19 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_alert(args: argparse.Namespace) -> int:
     root = _project_root()
-    config = config_from_env()
+    config = config_from_env(root)
     if args.dry_run:
         config.webhook_url = None
+    if args.test:
+        # Skip the heartbeat check; send a canned alert so the operator
+        # can confirm the webhook end-to-end.
+        from alptherm_icon.monitoring.alerter import deliver_test
+
+        ok = deliver_test(config)
+        if not config.webhook_url:
+            print("WARNING: no webhook configured — test message only printed locally.")
+            print("Set ALPTHERM_NTFY_URL in data/monitoring.env to enable POST.")
+        return 0 if ok else 2
     alerts = check(root, config)
     if not alerts:
         print("ok — no alerts")
@@ -84,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run",
         action="store_true",
         help="evaluate alerts but never POST to the webhook",
+    )
+    p_alert.add_argument(
+        "--test",
+        action="store_true",
+        help="send a canned test alert to verify the webhook is wired up",
     )
     p_alert.set_defaults(func=cmd_alert)
 

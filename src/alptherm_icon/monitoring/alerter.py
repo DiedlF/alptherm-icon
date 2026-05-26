@@ -188,15 +188,70 @@ def deliver(alerts: list[Alert], config: AlerterConfig) -> bool:
         return False
 
 
-def config_from_env() -> AlerterConfig:
-    """Build a config from environment variables for cron-friendly use.
-
-    Supported variables:
-
-    - ``ALPTHERM_NTFY_URL`` — full webhook URL (e.g. ``https://ntfy.sh/my-topic``)
-    - ``ALPTHERM_ALERT_TITLE`` — overrides the default title
+def _load_env_file(path: Path) -> dict[str, str]:
+    """Read a tiny ``KEY=VALUE``-per-line env file. No quoting, no
+    expansion — keeps secrets out of the crontab without pulling
+    python-dotenv as a dependency.
     """
+    if not path.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            out[key] = value
+    return out
+
+
+def config_from_env(root: Path | None = None) -> AlerterConfig:
+    """Build a config, preferring values from ``data/monitoring.env``
+    over process-level environment variables. The file format is a
+    simple ``KEY=VALUE`` per line (see ``data/monitoring.env.example``).
+
+    Supported keys:
+
+    - ``ALPTHERM_NTFY_URL`` — full webhook URL (e.g. ``https://ntfy.sh/topic``)
+    - ``ALPTHERM_ALERT_TITLE`` — overrides the default title
+
+    Resolution order: env file > process env. Keeps secrets out of the
+    crontab while still letting one-shot CLI invocations override.
+    """
+    file_env: dict[str, str] = {}
+    if root is not None:
+        file_env = _load_env_file(root / "data" / "monitoring.env")
+
+    def _resolve(key: str, default: str | None = None) -> str | None:
+        if key in file_env:
+            return file_env[key]
+        return os.environ.get(key, default)
+
     return AlerterConfig(
-        webhook_url=os.environ.get("ALPTHERM_NTFY_URL") or None,
-        webhook_title=os.environ.get("ALPTHERM_ALERT_TITLE", "ALPTHERM-ICON M0"),
+        webhook_url=_resolve("ALPTHERM_NTFY_URL") or None,
+        webhook_title=_resolve("ALPTHERM_ALERT_TITLE", "ALPTHERM-ICON M0") or "ALPTHERM-ICON M0",
+    )
+
+
+def deliver_test(config: AlerterConfig) -> bool:
+    """Send a single canned alert so the user can verify wiring.
+
+    Useful right after setting up ``data/monitoring.env`` — does not
+    consult the heartbeats at all.
+    """
+    now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return deliver(
+        alerts=[
+            Alert(
+                job="alerter",
+                kind="test",
+                detail=f"webhook reachable at {now_iso}",
+            )
+        ],
+        config=config,
     )
