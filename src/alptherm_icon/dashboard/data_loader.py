@@ -187,3 +187,130 @@ def load_ogn_inventory(root: Path) -> list[OgnDayStats]:
         except (ValueError, OSError):
             continue
     return sorted(out, key=lambda s: s.day)
+
+
+# ---------------------------------------------------------------------------
+# Ebene 3 — Inhaltliche Auswertung (Plan §10.2 Ebene 3)
+# ---------------------------------------------------------------------------
+
+
+def load_zarr_timeseries(
+    root: Path,
+    variables: tuple[str, ...] = ("cape_ml", "asob_s", "htop_dc", "tot_prec"),
+    days_back: int | None = 3,
+) -> "pandas.DataFrame":  # type: ignore[name-defined]  # noqa: F821
+    """Load spatial-max per timestep for the given Zarr variables.
+
+    Returns a long-format DataFrame with columns ``[time, variable, value]``.
+    Only the most recent ``days_back`` days of data are returned (default
+    3) — keeps the chart readable when the archive grows.
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    zarr_path = root / "data" / "archive" / "zarr" / "tier1.zarr"
+    if not zarr_path.exists():
+        return pd.DataFrame(columns=["time", "variable", "value"])
+
+    # NB: ``zarr_append`` does not deduplicate when overlapping forecast
+    # horizons of different inits arrive (25.5.03Z + lead 3 and 25.5.06Z
+    # + lead 0 share the validity time 25.5.06:00). We drop duplicates
+    # here at query time. Komp. B M2 should handle this properly via a
+    # "most-recent-issued wins" merge — for now the dashboard tolerates
+    # it. See plan §4.2 for the pipeline-side fix.
+    ds = xr.open_zarr(zarr_path)
+    times_raw = pd.to_datetime(ds.time.values)
+    # First-occurrence wins; sort to get a monotonic axis afterwards.
+    keep_idx = ~times_raw.duplicated(keep="first")
+    ds = ds.isel(time=np.where(keep_idx)[0])
+    sort_idx = np.argsort(ds.time.values)
+    ds = ds.isel(time=sort_idx)
+
+    if days_back is not None:
+        latest = pd.Timestamp(ds.time.values[-1])
+        cutoff = latest - pd.Timedelta(days=days_back)
+        mask = ds.time.values >= np.datetime64(cutoff)
+        ds = ds.isel(time=np.where(mask)[0])
+
+    rows: list[dict[str, object]] = []
+    for var in variables:
+        if var not in ds.data_vars:
+            continue
+        arr = np.asarray(ds[var].values, dtype=np.float64)
+        # Spatial max over (lat, lon) per timestep, ignoring NaN.
+        spatial_max = np.nanmax(arr.reshape(arr.shape[0], -1), axis=1)
+        for t, v in zip(ds.time.values, spatial_max):
+            if np.isfinite(v):
+                rows.append({"time": pd.Timestamp(t), "variable": var, "value": float(v)})
+    return pd.DataFrame(rows)
+
+
+def load_ogn_hourly_activity(
+    root: Path,
+    day: dt.date | None = None,
+) -> "pandas.DataFrame":  # type: ignore[name-defined]  # noqa: F821
+    """Count distinct aircraft IDs per UTC hour for one day's raw log.
+
+    Falls back to the most recent day's file if ``day`` is None.
+    Returns columns ``[hour, n_aircraft, n_packets]``.
+    """
+    import gzip
+    import json
+    import pandas as pd
+
+    inventory = load_ogn_inventory(root)
+    if not inventory:
+        return pd.DataFrame(columns=["hour", "n_aircraft", "n_packets"])
+    if day is None:
+        # Most recent file we have.
+        stats = inventory[-1]
+    else:
+        stats = next((s for s in inventory if s.day == day), None)
+        if stats is None:
+            return pd.DataFrame(columns=["hour", "n_aircraft", "n_packets"])
+
+    # Aircraft IDs and packet counts per hour. Receiver/status beacons
+    # (lines starting with '#') are not aircraft and excluded from the
+    # aircraft-count axis; they still count as packets.
+    per_hour_ids: dict[int, set[str]] = {}
+    per_hour_packets: dict[int, int] = {}
+    # The OGN daemon writes the current day's file live; mid-read EOFError
+    # is expected on a partial gzip frame. Tolerate by breaking the loop
+    # — we keep all already-read lines.
+    try:
+        with gzip.open(stats.path, "rt", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts_str = rec.get("ts_recv", "")
+                raw = rec.get("raw", "")
+                if len(ts_str) < 13:
+                    continue
+                try:
+                    hour = int(ts_str[11:13])
+                except ValueError:
+                    continue
+                per_hour_packets[hour] = per_hour_packets.get(hour, 0) + 1
+                if not raw or raw.startswith("#"):
+                    continue
+                # Aircraft ID is everything before the first '>' in APRS.
+                gt = raw.find(">")
+                if gt > 0:
+                    per_hour_ids.setdefault(hour, set()).add(raw[:gt])
+    except EOFError:
+        # Live-writer left an incomplete gzip frame at EOF — done reading.
+        pass
+
+    rows = []
+    for h in range(24):
+        rows.append(
+            {
+                "hour": h,
+                "n_aircraft": len(per_hour_ids.get(h, set())),
+                "n_packets": per_hour_packets.get(h, 0),
+            }
+        )
+    return pd.DataFrame(rows)

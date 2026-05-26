@@ -19,8 +19,10 @@ from alptherm_icon.dashboard.data_loader import (
     load_alerts,
     load_heartbeats,
     load_manifest_summary,
+    load_ogn_hourly_activity,
     load_ogn_inventory,
     load_storage,
+    load_zarr_timeseries,
     project_root,
 )
 
@@ -32,7 +34,9 @@ __all__ = [
     "load_alerts",
     "load_heartbeats",
     "load_manifest_summary",
+    "load_ogn_hourly_activity",
     "load_ogn_inventory",
     "load_storage",
+    "load_zarr_timeseries",
     "project_root",
 ]
