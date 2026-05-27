@@ -231,6 +231,30 @@ def load_storage(root: Path) -> StorageStats:
 # ---------------------------------------------------------------------------
 
 
+def load_regions(
+    root: Path,
+    simplify_deg: float = 0.003,
+):  # -> geopandas.GeoDataFrame | None
+    """Load the Regions-v1 GeoJSON for display, simplified for the browser.
+
+    833 full-resolution polygons (~10 MB) are sluggish as folium vector
+    paths. A ~0.003° (~250 m) Douglas-Peucker simplify cuts the vertex
+    count by ~5× with no visible difference at alpine-overview zoom.
+    Returns ``None`` if the v1 GeoJSON hasn't been built yet.
+    """
+    import geopandas as gpd
+
+    path = root / "data" / "regions" / "alpine_v1_basins.geojson"
+    if not path.exists():
+        return None
+    gdf = gpd.read_file(path)
+    if simplify_deg > 0:
+        gdf = gdf.copy()
+        gdf["geometry"] = gdf.geometry.simplify(simplify_deg).buffer(0)
+        gdf = gdf[~gdf.geometry.is_empty]
+    return gdf
+
+
 @dataclass
 class OgnDayStats:
     day: dt.date
