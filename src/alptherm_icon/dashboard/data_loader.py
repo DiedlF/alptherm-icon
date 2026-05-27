@@ -231,16 +231,46 @@ def load_storage(root: Path) -> StorageStats:
 # ---------------------------------------------------------------------------
 
 
+def _greedy_region_colors(gdf) -> list[int]:
+    """Assign a colour index per region so no two adjacent regions share
+    one (greedy graph colouring on intersection-adjacency). Planar-ish
+    geometries need ≤ ~7 colours. ~0.1 s for 833 regions.
+    """
+    geoms = list(gdf.geometry)
+    sindex = gdf.sindex
+    adj: dict[int, set[int]] = {i: set() for i in range(len(geoms))}
+    for i, g in enumerate(geoms):
+        for j in sindex.query(g):
+            if j > i and g.intersects(geoms[j]):
+                adj[i].add(int(j))
+                adj[int(j)].add(i)
+    color_idx = [-1] * len(geoms)
+    # Colour higher-degree nodes first — fewer total colours.
+    order = sorted(range(len(geoms)), key=lambda i: -len(adj[i]))
+    for i in order:
+        used = {color_idx[j] for j in adj[i] if color_idx[j] >= 0}
+        c = 0
+        while c in used:
+            c += 1
+        color_idx[i] = c
+    return color_idx
+
+
 def load_regions(
     root: Path,
     simplify_deg: float = 0.003,
+    with_colors: bool = True,
 ):  # -> geopandas.GeoDataFrame | None
     """Load the Regions-v1 GeoJSON for display, simplified for the browser.
 
     833 full-resolution polygons (~10 MB) are sluggish as folium vector
     paths. A ~0.003° (~250 m) Douglas-Peucker simplify cuts the vertex
     count by ~5× with no visible difference at alpine-overview zoom.
-    Returns ``None`` if the v1 GeoJSON hasn't been built yet.
+
+    When ``with_colors`` is set, a ``color_idx`` column is added via
+    greedy graph colouring so the "einzeln" display scheme can give
+    adjacent regions distinct colours. Returns ``None`` if the v1
+    GeoJSON hasn't been built yet.
     """
     import geopandas as gpd
 
@@ -251,8 +281,31 @@ def load_regions(
     if simplify_deg > 0:
         gdf = gdf.copy()
         gdf["geometry"] = gdf.geometry.simplify(simplify_deg).buffer(0)
-        gdf = gdf[~gdf.geometry.is_empty]
+        gdf = gdf[~gdf.geometry.is_empty].reset_index(drop=True)
+    if with_colors:
+        gdf["color_idx"] = _greedy_region_colors(gdf)
     return gdf
+
+
+def load_alpine_perimeter(root: Path, simplify_deg: float = 0.004):
+    """Dissolved outer boundary of all alpine regions — our topographic
+    Alpenraum-Perimeter (the official Alpine-Convention shapefile isn't
+    reachably published; this is the equivalent from our own 600 m
+    mean-elevation classification, Plan §3.1.1).
+
+    Returns a shapely geometry (the dissolved alpine area) or ``None``.
+    The caller draws its boundary as a line.
+    """
+    gdf = load_regions(root, simplify_deg=0.0, with_colors=False)
+    if gdf is None:
+        return None
+    alpine = gdf[gdf["habitat_class"] == "alpine"]
+    if alpine.empty:
+        return None
+    dissolved = alpine.geometry.union_all()
+    if simplify_deg > 0:
+        dissolved = dissolved.simplify(simplify_deg).buffer(0)
+    return dissolved
 
 
 @dataclass

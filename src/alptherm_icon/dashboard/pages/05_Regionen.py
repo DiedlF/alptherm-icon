@@ -1,36 +1,74 @@
 """Regionen-Karte (Komp. A v0) — interaktive Darstellung des ALPTHERM-
-Regionsgerüsts auf einem Terrain-Basemap.
+Regionsgerüsts auf einem topografischen Basemap.
 
 Zeigt die 833 Regionen-v1-Polygone (Plan §3.1 Stufe 1+2 + §3.1.1
-Quer-Segmentierung) als farbcodiertes Overlay über OpenTopoMap. Drei
-Farbschemata wählbar: Höhen-Habitat (alpine/vorland), Segment-Band,
-Größenklasse.
+Quer-Segmentierung) als farbcodiertes Overlay. Färbeschemata:
+Höhen-Habitat, Segment-Band, Größenklasse, oder Einzelfärbung
+(jede Region distinct via Graph-Coloring). Optionaler Alpen-Perimeter
+als Linie.
 """
 
 from __future__ import annotations
+
+import json
 
 import folium
 import streamlit as st
 from streamlit_folium import st_folium
 
-from alptherm_icon.dashboard.data_loader import load_regions, project_root
+from alptherm_icon.dashboard.data_loader import (
+    load_alpine_perimeter,
+    load_regions,
+    project_root,
+)
 
 st.set_page_config(page_title="Regionen", page_icon="🗺️", layout="wide")
 st.title("🗺️ ALPTHERM-Regionen")
 st.caption(
     "Komp. A v0 — 833 Regionen alpenweit (HydroBASINS L8 + §3.1.1 "
-    "Höhenband-Segmentierung). Hintergrund: OpenTopoMap."
+    "Höhenband-Segmentierung)."
 )
+
+# 7-Farben-Palette für die Einzelfärbung (greedy graph coloring liefert ≤7).
+DISTINCT_PALETTE = [
+    "#4e79a7", "#f28e2b", "#59a14f", "#e15759",
+    "#b07aa1", "#76b7b2", "#edc948", "#ff9da7", "#9c755f",
+]
+
+# Topografische Basemaps (XYZ-Tiles, kein Token nötig).
+BASEMAPS = {
+    "ESRI World Topo": {
+        "tiles": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+        "attr": "Tiles © Esri — Esri, DeLorme, NAVTEQ, TomTom, USGS, ...",
+        "max_zoom": 19,
+    },
+    "OpenTopoMap": {
+        "tiles": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "attr": "© OpenTopoMap (CC-BY-SA), © OpenStreetMap-Mitwirkende",
+        "max_zoom": 17,
+    },
+    "ESRI Imagery (Satellit)": {
+        "tiles": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attr": "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, ...",
+        "max_zoom": 19,
+    },
+}
 
 
 @st.cache_data(ttl=300)
-def _regions(_root_str: str, simplify_deg: float):
+def _regions(_root_str: str, simplify_deg: float) -> str | None:
     gdf = load_regions(project_root(), simplify_deg=simplify_deg)
-    if gdf is None:
+    return None if gdf is None else gdf.to_json()
+
+
+@st.cache_data(ttl=300)
+def _perimeter(_root_str: str) -> str | None:
+    geom = load_alpine_perimeter(project_root())
+    if geom is None:
         return None
-    # Return GeoJSON-serialisable records — folium needs __geo_interface__
-    # and cache_data can't pickle a live GeoDataFrame cheaply.
-    return gdf.to_json()
+    import shapely.geometry
+
+    return json.dumps(shapely.geometry.mapping(geom.boundary))
 
 
 root = project_root()
@@ -38,24 +76,28 @@ root = project_root()
 # ---------------------------------------------------------------------------
 # Controls
 # ---------------------------------------------------------------------------
-ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
-with ctrl1:
+c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1.2])
+with c1:
+    basemap_name = st.selectbox("Hintergrundkarte", list(BASEMAPS), index=0)
+with c2:
     color_by = st.selectbox(
         "Färben nach",
-        ["habitat_class", "band", "size_band"],
+        ["einzeln", "habitat_class", "band", "size_band"],
         format_func={
+            "einzeln": "Einzeln (jede Region)",
             "habitat_class": "Habitat (alpine/vorland)",
             "band": "Segment-Band",
             "size_band": "Größenklasse",
         }.get,
     )
-with ctrl2:
+with c3:
     detail = st.select_slider(
-        "Detailgrad",
-        options=["grob (schnell)", "mittel", "fein (langsam)"],
-        value="mittel",
+        "Detailgrad", options=["grob", "mittel", "fein"], value="mittel"
     )
-simplify_map = {"grob (schnell)": 0.006, "mittel": 0.003, "fein (langsam)": 0.0008}
+with c4:
+    show_perimeter = st.checkbox("Alpen-Perimeter", value=True)
+
+simplify_map = {"grob": 0.006, "mittel": 0.003, "fein": 0.0008}
 
 geojson_str = _regions(str(root), simplify_map[detail])
 if geojson_str is None:
@@ -68,24 +110,16 @@ if geojson_str is None:
     )
     st.stop()
 
-import json
-
 fc = json.loads(geojson_str)
 features = fc["features"]
 
-# Derive a size_band on the fly (area_km2 already in properties).
+# Derive size_band on the fly.
 for feat in features:
     a = feat["properties"].get("area_km2") or 0.0
-    if a < 100:
-        feat["properties"]["size_band"] = "<100"
-    elif a < 500:
-        feat["properties"]["size_band"] = "100–500"
-    elif a < 1500:
-        feat["properties"]["size_band"] = "500–1500"
-    else:
-        feat["properties"]["size_band"] = ">1500"
+    feat["properties"]["size_band"] = (
+        "<100" if a < 100 else "100–500" if a < 500 else "500–1500" if a < 1500 else ">1500"
+    )
 
-# Color palettes per scheme.
 palettes = {
     "habitat_class": {"alpine": "#2e7d32", "vorland": "#c8a063"},
     "band": {
@@ -101,32 +135,30 @@ palettes = {
         ">1500": "#fb8c00",
     },
 }
-palette = palettes[color_by]
+
+
+def _fill_color(props) -> str:
+    if color_by == "einzeln":
+        return DISTINCT_PALETTE[int(props.get("color_idx", 0)) % len(DISTINCT_PALETTE)]
+    return palettes[color_by].get(props.get(color_by, ""), "#999999")
 
 
 def _style(feature):
-    val = feature["properties"].get(color_by, "")
     return {
-        "fillColor": palette.get(val, "#999999"),
+        "fillColor": _fill_color(feature["properties"]),
         "color": "#333333",
         "weight": 0.4,
-        "fillOpacity": 0.45,
+        "fillOpacity": 0.5 if color_by == "einzeln" else 0.45,
     }
 
 
 # ---------------------------------------------------------------------------
-# Build the folium map (OpenTopoMap basemap, centered on the Alps)
+# Map
 # ---------------------------------------------------------------------------
-m = folium.Map(
-    location=[46.5, 11.0],
-    zoom_start=6,
-    tiles=None,
-)
+bm = BASEMAPS[basemap_name]
+m = folium.Map(location=[46.5, 11.0], zoom_start=6, tiles=None)
 folium.TileLayer(
-    tiles="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-    attr="© OpenTopoMap (CC-BY-SA), © OpenStreetMap-Mitwirkende",
-    name="OpenTopoMap",
-    max_zoom=17,
+    tiles=bm["tiles"], attr=bm["attr"], name=basemap_name, max_zoom=bm["max_zoom"]
 ).add_to(m)
 
 folium.GeoJson(
@@ -141,30 +173,49 @@ folium.GeoJson(
     smooth_factor=1.0,
 ).add_to(m)
 
+# Alpine perimeter as a bold line (dissolved alpine-region boundary).
+if show_perimeter:
+    peri_str = _perimeter(str(root))
+    if peri_str is not None:
+        folium.GeoJson(
+            json.loads(peri_str),
+            name="Alpen-Perimeter (topographisch)",
+            style_function=lambda _f: {"color": "#c62828", "weight": 2.5, "fillOpacity": 0},
+        ).add_to(m)
+
 folium.LayerControl().add_to(m)
 
-st.markdown(f"**{len(features)} Regionen** · Färbung: `{color_by}`")
+label = "einzeln (Graph-Coloring)" if color_by == "einzeln" else f"`{color_by}`"
+st.markdown(f"**{len(features)} Regionen** · Färbung: {label} · Karte: {basemap_name}")
 st_folium(m, width=None, height=620, returned_objects=[])
 
 # ---------------------------------------------------------------------------
-# Legend + stats
+# Legend
 # ---------------------------------------------------------------------------
-with st.expander("Legende + Statistik", expanded=True):
-    cols = st.columns(len(palette))
-    counts: dict[str, int] = {}
-    for feat in features:
-        v = feat["properties"].get(color_by, "")
-        counts[v] = counts.get(v, 0) + 1
-    for col, (label, color) in zip(cols, palette.items()):
-        col.markdown(
-            f"<div style='display:flex;align-items:center;gap:6px'>"
-            f"<div style='width:16px;height:16px;background:{color};"
-            f"border:1px solid #333'></div><span>{label} "
-            f"({counts.get(label, 0)})</span></div>",
-            unsafe_allow_html=True,
-        )
+if color_by != "einzeln":
+    with st.expander("Legende + Statistik", expanded=True):
+        palette = palettes[color_by]
+        counts: dict[str, int] = {}
+        for feat in features:
+            v = feat["properties"].get(color_by, "")
+            counts[v] = counts.get(v, 0) + 1
+        cols = st.columns(len(palette))
+        for col, (label_, color) in zip(cols, palette.items()):
+            col.markdown(
+                f"<div style='display:flex;align-items:center;gap:6px'>"
+                f"<div style='width:16px;height:16px;background:{color};"
+                f"border:1px solid #333'></div><span>{label_} "
+                f"({counts.get(label_, 0)})</span></div>",
+                unsafe_allow_html=True,
+            )
+else:
+    st.caption(
+        "Einzelfärbung: benachbarte Regionen bekommen via Graph-Coloring "
+        "garantiert unterschiedliche Farben (≤ 7 Farben genügen)."
+    )
 
 st.caption(
-    "Stufe 3 (datengetriebene L9-Verfeinerung) folgt nach einer Saison "
-    "ICON-Archiv — dann werden hochvariante Regionen weiter gesplittet (Plan §3.1)."
+    "Roter Umriss = topographischer Alpen-Perimeter (gedissolvte Grenze der "
+    "alpine-Regionen, 600 m-MSL-Schwelle, Plan §3.1.1). Der offizielle "
+    "Alpenkonventions-Perimeter ist nicht frei abrufbar publiziert."
 )
