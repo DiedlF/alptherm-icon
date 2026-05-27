@@ -884,6 +884,38 @@ assimiliert und trennt ICONs NWP-Vorhersagefehler sauberer vom eigenen Modellfeh
   entkoppelt.
 ]
 
+=== Trigger-Kriterien: Flächenanteil statt Spatial-Max
+Der Trigger wertet den 09-UTC-Lauf bei Leads 1–6 (10–15 UTC) über die
+Alpen-Bbox aus. Erste Implementierung nahm den *Spatial-Max* je Größe —
+das fiel aber an _jedem_ Sommertag, weil CAPE > 100 J/kg irgendwo in
+270.000 km² praktisch garantiert ist (empirisch 3/3 Tage gefeuert,
+immer über CAPE). Damit war die in 9.1/9.2 gewollte Selektivität weg.
+
+Korrektur: *areale OR-Gate-Logik*. Jeder Zweig fragt „ist das
+großflächig?" über einen Zellen-Schwellwert plus einen Mindest-
+Flächenanteil (max über die Leads):
+
+#tbl(
+  columns: (auto, auto, auto, 1fr),
+  header: ([Zweig], [Zellen-Schwelle], [Min. Fläche], [Bedeutung]),
+  ([CAPE], [CAPE_ML > 500 J/kg], [≥ 10 %], [großflächige Konvektion, nicht Einzelzelle]),
+  ([Strahlung], [ASOB_S > 600 W/m²], [≥ 25 %], [breit sonniger Tag (Blue Day mit wenig CAPE)]),
+  ([Blue-Day], [nass-Anteil < 10 % UND HTOP_DC > 2500 m auf ≥ 20 %], [—], [trocken + großflächige Trockenkonvektion]),
+)
+
+#note[
+  *Warum areal:* Der Spatial-Max ist eine 1-Zellen-Statistik — er
+  unterscheidet einen flächigen Thermiktag nicht von einer isolierten
+  Gewitterzelle in ansonsten stabiler Luft. Der Flächenanteil tut genau
+  das. Spiegelbildlich beim Niederschlag: der frühere `precip_window`
+  als Spatial-Max sprang schon bei einer einzigen Zelle auf 50 mm und
+  machte den Blue-Day-Zweig praktisch unerfüllbar; der *nass-Zellen-
+  Anteil* ist robust. Schwellen sind Startwerte, re-tunbar gegen die
+  IGC/OGN-Überlappung (§6.7, §7.6) sobald eine Saison archiviert ist.
+  Die §9.7-Phase-2-Erweiterungen (Sustained-Peak, Front-Detektion)
+  ergänzen die areale Logik später.
+]
+
 == 9.3 Sofortmaßnahmen (auch ohne Modellcode)
 *Maschine:* HomeServer als Primärsystem. Speicher ist der härtere Constraint (Archiv
 wächst monoton über Jahre, Platten nachrüstbar). Der Bandbreiten-Constraint ist weicher:
