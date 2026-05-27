@@ -28,6 +28,12 @@ from alptherm_icon.regions.alpine_v0 import (
     summarise,
     write_geojson,
 )
+from alptherm_icon.regions.alpine_v0_dem import (
+    annotate_basins,
+    build_alpine_mosaic,
+    compute_ahd_batch,
+    download_alpine_tiles,
+)
 from alptherm_icon.regions.basins import fetch_hydrobasins, select_basins
 from alptherm_icon.regions.dem import build_region_dem
 from alptherm_icon.regions.polygon import load_region
@@ -163,6 +169,67 @@ def cmd_alpine_v0(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_alpine_v0_dem(args: argparse.Namespace) -> int:
+    """Sprint 2a: download all Copernicus tiles for the Alpine bbox +
+    build a single EPSG:3035 mosaic."""
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    root = _project_root()
+    tiles_dir = root / "data" / "dem" / "tiles"
+
+    if not args.skip_download:
+        s = download_alpine_tiles(tiles_dir)
+        print(
+            f"tiles: {s.downloaded} downloaded + {s.cached} cached "
+            f"+ {s.missing} missing/ocean, {s.bytes_total / 1e9:.1f} GB total"
+        )
+
+    mosaic = root / "data" / "dem" / "alpine_v0_dem.tif"
+    if not args.skip_mosaic:
+        build_alpine_mosaic(tiles_dir, mosaic)
+        print(f"mosaic: {mosaic.relative_to(root)} ({mosaic.stat().st_size / 1e9:.2f} GB)")
+    return 0
+
+
+def cmd_alpine_v0_ahd(args: argparse.Namespace) -> int:
+    """Sprint 2b: per-region AHD against the shared mosaic + write
+    annotated GeoJSON.
+    """
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    root = _project_root()
+    geojson_in = root / "data" / "regions" / "alpine_v0_basins.geojson"
+    mosaic = root / "data" / "dem" / "alpine_v0_dem.tif"
+    ahd_dir = root / "data" / "regions" / "alpine_v0_ahd"
+    geojson_out = root / "data" / "regions" / "alpine_v0_basins_annotated.geojson"
+
+    if not geojson_in.exists():
+        raise FileNotFoundError(
+            f"missing {geojson_in.relative_to(root)} — run `alpine-v0` first"
+        )
+    if not mosaic.exists():
+        raise FileNotFoundError(
+            f"missing {mosaic.relative_to(root)} — run `alpine-v0-dem` first"
+        )
+
+    basins = gpd.read_file(geojson_in)
+    print(f"computing AHD for {len(basins)} regions…")
+    results = compute_ahd_batch(basins, mosaic, ahd_dir, overwrite=args.force)
+    print(f"AHD profiles written: {len(results)} → {ahd_dir.relative_to(root)}")
+
+    annotated = annotate_basins(basins, results)
+    annotated.to_file(geojson_out, driver="GeoJSON")
+    n_alpine = (annotated["habitat_class"] == "alpine").sum()
+    n_vorland = (annotated["habitat_class"] == "vorland").sum()
+    print(
+        f"annotated GeoJSON: {geojson_out.relative_to(root)} "
+        f"(alpine={n_alpine}, vorland={n_vorland})"
+    )
+    return 0
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     root = _project_root()
     geom, props = load_region(_config_path(root, args.region), name=args.region)
@@ -234,6 +301,27 @@ def main(argv: list[str] | None = None) -> int:
         help="minimum fraction of a basin inside ALPEN_BBOX (default: 0.5)",
     )
     p_alpine.set_defaults(func=cmd_alpine_v0)
+
+    p_alpine_dem = sub.add_parser(
+        "alpine-v0-dem",
+        help="Sprint 2a: download all Copernicus tiles for the Alpine bbox + build mosaic",
+    )
+    p_alpine_dem.add_argument(
+        "--skip-download", action="store_true", help="skip tile-download step"
+    )
+    p_alpine_dem.add_argument(
+        "--skip-mosaic", action="store_true", help="skip mosaic-build step"
+    )
+    p_alpine_dem.set_defaults(func=cmd_alpine_v0_dem)
+
+    p_alpine_ahd = sub.add_parser(
+        "alpine-v0-ahd",
+        help="Sprint 2b: per-region AHD against the shared mosaic + annotated GeoJSON",
+    )
+    p_alpine_ahd.add_argument(
+        "--force", action="store_true", help="recompute AHD even if NetCDF exists"
+    )
+    p_alpine_ahd.set_defaults(func=cmd_alpine_v0_ahd)
 
     args = parser.parse_args(argv)
     return args.func(args)
