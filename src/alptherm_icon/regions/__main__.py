@@ -34,6 +34,7 @@ from alptherm_icon.regions.alpine_v0_dem import (
     compute_ahd_batch,
     download_alpine_tiles,
 )
+from alptherm_icon.regions.alpine_v1 import build_alpine_v1
 from alptherm_icon.regions.basins import fetch_hydrobasins, select_basins
 from alptherm_icon.regions.dem import build_region_dem
 from alptherm_icon.regions.polygon import load_region
@@ -230,6 +231,77 @@ def cmd_alpine_v0_ahd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _enrich_with_risk_columns(basins, ahd_dir: Path):
+    """Add elev_min_m / elev_range_m / aspect_ratio columns from AHD NetCDFs."""
+    import numpy as np
+    import xarray as xr
+
+    mn, rng = [], []
+    for hid in basins["HYBAS_ID"]:
+        nc = ahd_dir / f"region_{int(hid)}_ahd.nc"
+        if not nc.exists():
+            mn.append(float("nan"))
+            rng.append(float("nan"))
+            continue
+        with xr.open_dataset(nc) as ds:
+            zb, zt, sg = ds["z_bottom"].values, ds["z_top"].values, ds["s_g"].values
+            v = sg > 0
+            if not v.any():
+                mn.append(float("nan"))
+                rng.append(float("nan"))
+                continue
+            mn.append(float(zb[v].min()))
+            rng.append(float(zt[v].max() - zb[v].min()))
+    basins = basins.copy()
+    basins["elev_min_m"] = mn
+    basins["elev_range_m"] = rng
+
+    def _aspect(geom):
+        minx, miny, maxx, maxy = geom.bounds
+        dx = (maxx - minx) * 111.0 * np.cos(np.radians((miny + maxy) / 2))
+        dy = (maxy - miny) * 111.0
+        lo, hi = min(dx, dy), max(dx, dy)
+        return hi / lo if lo > 0 else float("inf")
+
+    basins["aspect_ratio"] = basins.geometry.apply(_aspect)
+    return basins
+
+
+def cmd_alpine_v1(args: argparse.Namespace) -> int:
+    """Sprint 3: §3.1.1 Quer-Segmentierung der höhen-heterogenen
+    Randbecken nach Höhenbändern."""
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    root = _project_root()
+    geojson_in = root / "data" / "regions" / "alpine_v0_basins_annotated.geojson"
+    ahd_dir = root / "data" / "regions" / "alpine_v0_ahd"
+    mosaic = root / "data" / "dem" / "alpine_v0_dem.tif"
+    geojson_out = root / "data" / "regions" / "alpine_v1_basins.geojson"
+
+    for p in (geojson_in, mosaic):
+        if not p.exists():
+            raise FileNotFoundError(f"missing {p.relative_to(root)} — run Sprint 1/2 first")
+
+    basins = gpd.read_file(geojson_in)
+    basins = _enrich_with_risk_columns(basins, ahd_dir)
+    print(f"loaded {len(basins)} basins, enriched with elevation/aspect")
+
+    v1 = build_alpine_v1(basins, mosaic)
+    v1.to_file(geojson_out, driver="GeoJSON")
+
+    n_whole = int((v1["band"] == "whole").sum())
+    n_seg = len(v1) - n_whole
+    n_parents = v1[v1["band"] != "whole"]["hybas_id"].nunique()
+    print(
+        f"alpine-v1: {len(v1)} regions "
+        f"({n_whole} unverändert, {n_seg} Segmente aus {n_parents} gesplitteten Becken)"
+    )
+    print(f"  band distribution: {v1['band'].value_counts().to_dict()}")
+    print(f"wrote {geojson_out.relative_to(root)} ({geojson_out.stat().st_size / 1e6:.1f} MB)")
+    return 0
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     root = _project_root()
     geom, props = load_region(_config_path(root, args.region), name=args.region)
@@ -322,6 +394,12 @@ def main(argv: list[str] | None = None) -> int:
         "--force", action="store_true", help="recompute AHD even if NetCDF exists"
     )
     p_alpine_ahd.set_defaults(func=cmd_alpine_v0_ahd)
+
+    p_alpine_v1 = sub.add_parser(
+        "alpine-v1",
+        help="Sprint 3: §3.1.1 Quer-Segmentierung der Randbecken nach Höhenbändern",
+    )
+    p_alpine_v1.set_defaults(func=cmd_alpine_v1)
 
     args = parser.parse_args(argv)
     return args.func(args)
