@@ -17,6 +17,8 @@ data/archive/*
 !data/archive/.gitkeep
 data/status/*
 !data/status/.gitkeep
+data/thermals/*
+!data/thermals/.gitkeep
 data/ogn/*
 !data/ogn/.gitkeep
 data/watchlist.json
