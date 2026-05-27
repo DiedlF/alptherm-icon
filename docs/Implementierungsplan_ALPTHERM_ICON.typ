@@ -256,7 +256,7 @@ zusätzlicher Schnitt nach Geländecharakter.
 
 *Wichtig — Talwind-Konnektivität bewahren:* Ein Quer-Schnitt zertrennt ein
 zusammenhängendes Talwindsystem. Der Talwind transportiert Feuchte und Luftmasse vom
-Vorland ins Gebirge (genau der Regtherm-Kopplungsmechanismus, siehe 5.5). Die Segmente
+Vorland ins Gebirge (genau der Regtherm-Kopplungsmechanismus, siehe 5.6). Die Segmente
 werden daher geometrisch getrennt, aber in der Kopplungsstufe als vertikal benachbarte,
 gekoppelte Regionen wieder verbunden. Jeder Schnitt entspricht so einer physikalischen
 Grenze: Wasserscheide (längs), Alpenrand (Regimewechsel), Reliefstufe (Gültigkeit des
@@ -269,7 +269,7 @@ Input: Copernicus DEM GLO-30 (~30m). Pro Region:
 - $V_a (z)$ = Differenz zwischen Maximalvolumen einer 100m-Schicht und dem von Topographie eingenommenen Volumen.
 - Ergänzend: mittlere Hangneigung und Exposition pro Höhenklasse — Erweiterungs-Hook für Richters Kritik an steilen Heizflächen.
 
-=== Zusätzlich — Schwellenhöhen des Regionsgraphen (für die Kopplung, 5.5):
+=== Zusätzlich — Schwellenhöhen des Regionsgraphen (für die Kopplung, 5.6):
 Neben den AHD-Profilen je Region wird pro Regions_nachbarschaft_ (Kante des
 Nachbarschaftsgraphen) die effektive Schwellenhöhe bestimmt: die niedrigste Stelle im
 DEM entlang der gemeinsamen Polygongrenze, relativ zu den Talböden beider Regionen.
@@ -300,6 +300,7 @@ Forecast-Schritte stündlich.
   ([Wärmeströme], [ASHFL_S, ALHFL_S], [Sensibler/latenter Wärmestrom direkt]),
   ([Bewölkung], [CLCT_MOD, CLCH, CLCM, CLCL], [Bewölkungseinfluss bereits in Strahlung]),
   ([Bodennahe Größen], [T_2M, TD_2M, T_G, RELHUM_2M], [Bodentemperatur, Feuchte, $T_S$ statt δ·P]),
+  ([Bodenwind], [U_10M, V_10M, VMAX_10M], [Wind-Veto für Gleitschirm-Profil (5.5); Talwind-Proxy]),
   ([Konvektions-Diag.], [HBAS_SC, HTOP_SC], [Cu-Basis (Tuning-Target für Cu-Tage)]),
   ([], [HBAS_CON, HTOP_CON], [Hochreichende Konv. $->$ Ausschlusskriterium]),
   ([], [HTOP_DC], [Trockenkonvektion (Blue-Day Validierung)]),
@@ -457,7 +458,44 @@ Pro Zeitschritt Δt (vorgeschlagen 2 min, wie Original):
 Geschätzt 4–6 Wochen für eine saubere, vektorisierte numpy-Implementierung mit Tests
 gegen Liechtis Beispielfall (Subsidenz-Sensitivität, Fig. 4 im Originalpaper).
 
-== 5.5 Regionale Kopplung (Regtherm-Mechanismus)
+== 5.5 Aircraft-Profile — getrennte Prognose Gleitschirm / Segelflug
+Gleitschirm und Segelflug nutzen _dieselbe_ Luft unterschiedlich. Die
+teure Physik (CBL-Evolution, Steigprofil $v(z,t)$, Wolkenbasis) wird
+*einmal* pro Region gerechnet; die typspezifische Prognose ist eine
+dünne Post-Processing-Schicht darüber — kein zweites Modell.
+
+#tbl(
+  columns: (auto, 1fr, 1fr),
+  header: ([Faktor], [Gleitschirm], [Segelflug]),
+  ([Eigensinken / Polare], [~1,0 m/s, kreist eng — nutzt schwache/enge Bärte], [andere Polare, schneller — braucht stärkere/breitere Bärte]),
+  ([Nutzbares Steigen], [niedrigere Schwelle], [höhere Schwelle]),
+  ([Obergrenze], [selten > 3500–4000 m, oft nur unterer Schichtteil], [bis Wolkenbasis / volle Schichtdicke]),
+  ([Wind], [hartes Veto bei > ~25–30 km/h bzw. Böen/Turbulenz], [weit toleranter]),
+  ([Tageszeit], [früher/sanfter; Mittagsrauheit problematisch], [Mittagspeak gewünscht]),
+)
+
+Jedes Profil ist also ein Parametersatz
+``{Polare/Sinken, Obergrenzen-Regel, Wind-Veto, Tageszeit-Präferenz}``,
+angewandt auf den geteilten CBL-Output. Daraus folgt pro Region und
+Zeit-Bin eine _typspezifische_ Aussage: nutzbares Netto-Steigen,
+nutzbare Höhe, "fliegbar ja/nein" (für Gleitschirm v.a. das Wind-Veto).
+
+#note[
+  *Warum das elegant ist:* Die Validierung kommt gratis aus OGN —
+  der Stream trennt Flugzeugtyp (FLARM/FANET ``aircraft_type``), die
+  Thermik-Statistik pro Region (§7.6) lässt sich nach Typ splitten,
+  jedes Profil empirisch separat tunen. Gleitschirm-Prognosen sind
+  zudem unterversorgt; der Mehrwert ist hoch bei kleinem Zusatzaufwand
+  (geteilte Physik).
+
+  *Zwei Voraussetzungen:* (1) Das Wind-Veto braucht Bodenwind —
+  ``U_10M / V_10M / VMAX_10M`` sind dafür in die Tier-1-Variablenliste
+  aufgenommen (§4.1). (2) Das per-Typ-Tuning braucht die bereinigte
+  OGN-``aircraft_type``-Zuordnung über die Device-DB (§9.5-Caveat), da
+  der rohe Typ-Tag verrauscht ist.
+]
+
+== 5.6 Regionale Kopplung (Regtherm-Mechanismus)
 Das Original-ALPTHERM (1993) behandelt jede Region isoliert. Liechti (2002) erweiterte
 es zu Regtherm durch *horizontale Kopplung benachbarter Regionen*, um
 Sekundärzirkulationen — Talwindsysteme und Seebrisen — zu erfassen. Relevant aus zwei
@@ -1325,7 +1363,7 @@ OGN-Live-Stream unwiederbringlich verloren (siehe Kap. 9).
   ([IGC-Selektion: Piloten fliegen beste Bärte, nicht Mittel], [Modell-Output als Q90 reporten; ggf. explizite Bart-Statistik]),
   ([WeGlide-API: Firewall blockt Server-IPs; ToS], [API-Key proaktiv anfragen; aggressives Caching, höfliches Crawling; OLC als Fallback]),
   ([HTOP_DC-Qualität für Blue Days nicht validiert], [Initial-Check an klaren Strahlungstagen im Inntal]),
-  ([Talwind-/Konvergenzeffekte in Phase 1 nicht erfasst], [Regtherm-Kopplung als Phase-2-Erweiterung dokumentiert (5.5); ICON-W und Windvarianz als Datengrundlage]),
+  ([Talwind-/Konvergenzeffekte in Phase 1 nicht erfasst], [Regtherm-Kopplung als Phase-2-Erweiterung dokumentiert (5.6); ICON-W und Windvarianz als Datengrundlage]),
   ([Regionsschnitte ad hoc], [Iteration: grob starten, bei systematischen Biases verfeinern]),
 )
 
