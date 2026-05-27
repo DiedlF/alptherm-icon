@@ -22,6 +22,12 @@ import geopandas as gpd
 import shapely.geometry
 
 from alptherm_icon.regions.ahd import compute_ahd
+from alptherm_icon.regions.alpine_v0 import (
+    ALPEN_BBOX,
+    load_alpine_basins,
+    summarise,
+    write_geojson,
+)
 from alptherm_icon.regions.basins import fetch_hydrobasins, select_basins
 from alptherm_icon.regions.dem import build_region_dem
 from alptherm_icon.regions.polygon import load_region
@@ -135,6 +141,28 @@ def cmd_refine_region(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_alpine_v0(args: argparse.Namespace) -> int:
+    """Sprint 1 from plan §3.1 Stufe 1 — clip HydroBASINS L8 to the
+    Alpine bbox and write a tagged GeoJSON gerüst. No DEM, no manual
+    Hauptkamm; just the geometric initial layer that Komp. B M2 can
+    aggregate over.
+    """
+    root = _project_root()
+    basins_dir = root / "data" / "basins"
+    shp = fetch_hydrobasins(basins_dir, region="eu", level=8)
+    print(f"HydroBASINS L8: {shp.relative_to(root)}")
+    basins = load_alpine_basins(shp, bbox=ALPEN_BBOX, min_overlap_frac=args.min_overlap)
+    s = summarise(basins)
+    print(f"selected {s.n_basins:,} basins ({s.total_area_km2:,.0f} km² total)")
+    for k, v in s.n_by_size_class.items():
+        print(f"  size_class={k:14s} n={v:4d}")
+
+    out = root / "data" / "regions" / "alpine_v0_basins.geojson"
+    write_geojson(basins, out)
+    print(f"wrote {out.relative_to(root)} ({out.stat().st_size / 1e6:.1f} MB)")
+    return 0
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     root = _project_root()
     geom, props = load_region(_config_path(root, args.region), name=args.region)
@@ -194,6 +222,18 @@ def main(argv: list[str] | None = None) -> int:
     p_build = sub.add_parser("build", help="fetch DEM + compute AHD NetCDF")
     p_build.add_argument("region")
     p_build.set_defaults(func=cmd_build)
+
+    p_alpine = sub.add_parser(
+        "alpine-v0",
+        help="Sprint 1: clip HydroBASINS L8 to the Alpine bbox + tag (plan §3.1 Stufe 1)",
+    )
+    p_alpine.add_argument(
+        "--min-overlap",
+        type=float,
+        default=0.5,
+        help="minimum fraction of a basin inside ALPEN_BBOX (default: 0.5)",
+    )
+    p_alpine.set_defaults(func=cmd_alpine_v0)
 
     args = parser.parse_args(argv)
     return args.func(args)
