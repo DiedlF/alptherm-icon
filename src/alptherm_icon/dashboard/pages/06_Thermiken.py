@@ -43,15 +43,18 @@ def _days(_root: str) -> list[str]:
 
 
 @st.cache_data(ttl=120)
-def _thermals(_root: str, day: str):
-    df = load_thermals(project_root(), day=day)
-    return None if df is None else df.to_json(orient="records")
+def _thermals_df(_root: str, day: str):
+    """Cache the DataFrame directly — avoids the to_json/read_json
+    round-trip (~600–1000 ms on 12 k thermals)."""
+    return load_thermals(project_root(), day=day)
 
 
 @st.cache_data(ttl=300)
-def _regions_geojson(_root: str) -> str | None:
+def _regions_overlay_fc(_root: str):
+    """Region outlines as a GeoJSON FeatureCollection dict (no fill,
+    used only for the line overlay under the thermal points)."""
     gdf = load_regions(project_root(), simplify_deg=0.005, with_colors=False)
-    return None if gdf is None else gdf.to_json()
+    return None if gdf is None else json.loads(gdf.to_json())
 
 
 root = project_root()
@@ -84,9 +87,8 @@ with c3:
 
 import pandas as pd
 
-records = _thermals(str(root), day)
-df = pd.read_json(records, orient="records") if records else pd.DataFrame()
-if df.empty:
+df = _thermals_df(str(root), day)
+if df is None or df.empty:
     st.info(f"Keine Thermiken für {day}.")
     st.stop()
 
@@ -139,12 +141,12 @@ tile_layer = pdk.Layer(
 )
 layers.append(tile_layer)
 
-regions_geojson = _regions_geojson(str(root))
-if regions_geojson:
+regions_fc = _regions_overlay_fc(str(root))
+if regions_fc:
     layers.append(
         pdk.Layer(
             "GeoJsonLayer",
-            data=json.loads(regions_geojson),
+            data=regions_fc,
             stroked=True,
             filled=False,
             get_line_color=[80, 80, 80, 120],

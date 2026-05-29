@@ -322,8 +322,23 @@ def load_alpine_perimeter(root: Path, simplify_deg: float = 0.004):
 
     Returns a shapely geometry (the dissolved alpine area) or ``None``.
     The caller draws its boundary as a line.
+
+    Performance: the actual dissolve takes ~3 s (union of 374 alpine
+    polygons). We cache the result as WKB next to the regions GeoJSON
+    and invalidate by mtime — subsequent calls load in < 5 ms.
     """
-    gdf = load_regions(root, simplify_deg=0.0, with_colors=False)
+    import shapely.wkb
+
+    regions_path = root / "data" / "regions" / "alpine_v1_basins.geojson"
+    cache = root / "data" / "regions" / "alpine_v0_perimeter.wkb"
+    if (
+        cache.exists()
+        and regions_path.exists()
+        and cache.stat().st_mtime >= regions_path.stat().st_mtime
+    ):
+        return shapely.wkb.loads(cache.read_bytes())
+
+    gdf = load_regions(root, simplify_deg=0.002, with_colors=False)
     if gdf is None:
         return None
     alpine = gdf[gdf["habitat_class"] == "alpine"]
@@ -332,6 +347,11 @@ def load_alpine_perimeter(root: Path, simplify_deg: float = 0.004):
     dissolved = alpine.geometry.union_all()
     if simplify_deg > 0:
         dissolved = dissolved.simplify(simplify_deg).buffer(0)
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(shapely.wkb.dumps(dissolved))
+    except OSError:
+        pass  # caching is best-effort — never fail the load on cache write
     return dissolved
 
 

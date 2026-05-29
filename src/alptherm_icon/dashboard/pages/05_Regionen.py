@@ -56,19 +56,30 @@ BASEMAPS = {
 
 
 @st.cache_data(ttl=300)
-def _regions(_root_str: str, simplify_deg: float) -> str | None:
+def _regions_fc(_root_str: str, simplify_deg: float):
+    """Return the GeoJSON FeatureCollection dict with size_band already
+    derived. Cached → no JSON round-trip on rerun.
+    """
     gdf = load_regions(project_root(), simplify_deg=simplify_deg)
-    return None if gdf is None else gdf.to_json()
+    if gdf is None:
+        return None
+    fc = json.loads(gdf.to_json())
+    for feat in fc["features"]:
+        a = feat["properties"].get("area_km2") or 0.0
+        feat["properties"]["size_band"] = (
+            "<100" if a < 100 else "100–500" if a < 500
+            else "500–1500" if a < 1500 else ">1500"
+        )
+    return fc
 
 
 @st.cache_data(ttl=300)
-def _perimeter(_root_str: str) -> str | None:
-    geom = load_alpine_perimeter(project_root())
-    if geom is None:
-        return None
+def _perimeter_dict(_root_str: str):
+    """Return the perimeter boundary as a GeoJSON-mappable dict."""
     import shapely.geometry
 
-    return json.dumps(shapely.geometry.mapping(geom.boundary))
+    geom = load_alpine_perimeter(project_root())
+    return None if geom is None else shapely.geometry.mapping(geom.boundary)
 
 
 root = project_root()
@@ -99,8 +110,8 @@ with c4:
 
 simplify_map = {"grob": 0.006, "mittel": 0.003, "fein": 0.0008}
 
-geojson_str = _regions(str(root), simplify_map[detail])
-if geojson_str is None:
+fc = _regions_fc(str(root), simplify_map[detail])
+if fc is None:
     st.warning(
         "Noch kein Regions-GeoJSON. Erst die Komp.-A-Pipeline laufen lassen:\n\n"
         "```\npython -m alptherm_icon.regions alpine-v0\n"
@@ -110,15 +121,7 @@ if geojson_str is None:
     )
     st.stop()
 
-fc = json.loads(geojson_str)
 features = fc["features"]
-
-# Derive size_band on the fly.
-for feat in features:
-    a = feat["properties"].get("area_km2") or 0.0
-    feat["properties"]["size_band"] = (
-        "<100" if a < 100 else "100–500" if a < 500 else "500–1500" if a < 1500 else ">1500"
-    )
 
 palettes = {
     "habitat_class": {"alpine": "#2e7d32", "vorland": "#c8a063"},
@@ -175,10 +178,10 @@ folium.GeoJson(
 
 # Alpine perimeter as a bold line (dissolved alpine-region boundary).
 if show_perimeter:
-    peri_str = _perimeter(str(root))
-    if peri_str is not None:
+    peri_dict = _perimeter_dict(str(root))
+    if peri_dict is not None:
         folium.GeoJson(
-            json.loads(peri_str),
+            peri_dict,
             name="Alpen-Perimeter (topographisch)",
             style_function=lambda _f: {"color": "#c62828", "weight": 2.5, "fillOpacity": 0},
         ).add_to(m)
