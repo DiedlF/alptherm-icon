@@ -231,6 +231,39 @@ def load_storage(root: Path) -> StorageStats:
 # ---------------------------------------------------------------------------
 
 
+def _safe_simplify(gdf, tol: float):
+    """Simplify each geometry defensively.
+
+    The vectorised geopandas/shapely path occasionally trips on a
+    pathological coordinate at tolerances like 0.005° and raises
+    ``IllegalArgumentException: CGAlgorithmsDD::orientationIndex
+    encountered NaN/Inf numbers`` — the whole call dies even though
+    only one feature is bad. Per-row simplify with ``make_valid`` and
+    a try/except keeps the rest of the layer working. ~833 rows of
+    per-row simplify is < 50 ms on this dataset, no perceivable hit.
+    """
+    import shapely.validation as _v
+
+    def _one(g):
+        if g is None or g.is_empty:
+            return None
+        try:
+            return g.simplify(tol).buffer(0)
+        except Exception:  # noqa: BLE001 — GEOS edge case on this feature
+            pass
+        # second attempt: make_valid + retry
+        try:
+            return _v.make_valid(g).simplify(tol).buffer(0)
+        except Exception:  # noqa: BLE001
+            return None
+
+    gdf = gdf.copy()
+    gdf["geometry"] = gdf.geometry.apply(_one)
+    gdf = gdf[gdf.geometry.notna()]
+    gdf = gdf[~gdf.geometry.is_empty].reset_index(drop=True)
+    return gdf
+
+
 def _greedy_region_colors(gdf) -> list[int]:
     """Assign a colour index per region so no two adjacent regions share
     one (greedy graph colouring on intersection-adjacency). Planar-ish
@@ -279,9 +312,7 @@ def load_regions(
         return None
     gdf = gpd.read_file(path)
     if simplify_deg > 0:
-        gdf = gdf.copy()
-        gdf["geometry"] = gdf.geometry.simplify(simplify_deg).buffer(0)
-        gdf = gdf[~gdf.geometry.is_empty].reset_index(drop=True)
+        gdf = _safe_simplify(gdf, simplify_deg)
     if with_colors:
         gdf["color_idx"] = _greedy_region_colors(gdf)
     return gdf
