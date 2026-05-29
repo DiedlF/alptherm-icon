@@ -287,6 +287,33 @@ def load_regions(
     return gdf
 
 
+def list_thermal_days(root: Path) -> list[str]:
+    """Available thermal-parquet days (``YYYY-MM-DD``), newest last."""
+    d = root / "data" / "thermals"
+    if not d.exists():
+        return []
+    days = []
+    for p in d.glob("*_thermals.parquet"):
+        stem = p.name.removesuffix("_thermals.parquet")
+        days.append(stem)
+    return sorted(days)
+
+
+def load_thermals(root: Path, day: str | None = None):
+    """Load one day's detected thermals (parquet). Newest day if ``day``
+    is None. Returns a DataFrame or ``None`` if nothing available."""
+    import pandas as pd
+
+    days = list_thermal_days(root)
+    if not days:
+        return None
+    chosen = day if (day in days) else days[-1]
+    path = root / "data" / "thermals" / f"{chosen}_thermals.parquet"
+    if not path.exists():
+        return None
+    return pd.read_parquet(path)
+
+
 def load_alpine_perimeter(root: Path, simplify_deg: float = 0.004):
     """Dissolved outer boundary of all alpine regions — our topographic
     Alpenraum-Perimeter (the official Alpine-Convention shapefile isn't

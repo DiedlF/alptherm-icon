@@ -17,9 +17,11 @@ import numpy as np
 EARTH_R_M = 6_371_000.0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Fix:
-    """One position report."""
+    """One position report. ``slots=True`` drops the per-instance __dict__
+    — at ~25 M fixes for a full convective day that's the difference
+    between fitting in RAM and an OOM kill."""
 
     t: dt.datetime
     lat: float
