@@ -388,13 +388,18 @@ def _build_non_alpine_regions(basins: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Geometry is in a geographic CRS")
             pt = row.geometry.representative_point()
+        area_raw = row.get("area_km2", 0.0)
+        try:
+            area_km2 = float(area_raw) if area_raw is not None else 0.0
+        except (TypeError, ValueError):
+            area_km2 = 0.0
         rows.append({
             "region_id": f"hb8_{hid}",
             "soiusa_name": "",
             "soiusa_code": "",
             "osm_id": "",
             "n_basins": 1,
-            "area_km2": float(row.get("area_km2", float("nan"))),
+            "area_km2": area_km2,
             "terrain_type": "non_alpine",
             "centroid_lat": pt.y,
             "centroid_lon": pt.x,

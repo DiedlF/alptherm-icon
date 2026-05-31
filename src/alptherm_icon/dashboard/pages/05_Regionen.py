@@ -93,7 +93,10 @@ def _load_v2(_root: str, simplify_deg: float):
         return None
     fc = json.loads(gdf.to_json())
     for feat in fc["features"]:
-        a = feat["properties"].get("area_km2") or 0.0
+        try:
+            a = float(feat["properties"].get("area_km2") or 0.0)
+        except (TypeError, ValueError):
+            a = 0.0
         feat["properties"]["size_band"] = (
             "<100" if a < 100 else "100–500" if a < 500
             else "500–1500" if a < 1500 else ">1500"
@@ -109,7 +112,10 @@ def _load_v1(_root: str, simplify_deg: float):
         return None
     fc = json.loads(gdf.to_json())
     for feat in fc["features"]:
-        a = feat["properties"].get("area_km2") or 0.0
+        try:
+            a = float(feat["properties"].get("area_km2") or 0.0)
+        except (TypeError, ValueError):
+            a = 0.0
         feat["properties"]["size_band"] = (
             "<100" if a < 100 else "100–500" if a < 500
             else "500–1500" if a < 1500 else ">1500"
