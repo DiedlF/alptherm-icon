@@ -555,32 +555,55 @@ def cmd_alpine_v2_ahd(args: argparse.Namespace) -> int:
 
     regions = gpd.read_file(geojson_in)
 
-    # Only pass regions that need computation to the batch to keep peak
-    # memory low — large SOIUSA union polygons + DEM masking can OOM if
-    # all 400 geometries are held in memory simultaneously.
-    if not args.force:
-        uncached = regions[
-            regions["region_id"].apply(
-                lambda rid: not (ahd_dir / f"region_{rid}_ahd.nc").exists()
-            )
-        ]
-        n_cached = len(regions) - len(uncached)
-        if n_cached:
-            print(f"skipping {n_cached} already-cached AHD profiles")
-        batch_regions = uncached if not uncached.empty else regions
-    else:
-        batch_regions = regions
+    # Split into uncached (need DEM masking) and cached (just read NetCDF).
+    # Processing only uncached regions in the DEM-masking pass keeps peak
+    # memory low — a large SOIUSA union polygon's DEM mask can be hundreds
+    # of MB, and running that alongside the cached GDF wastes RAM.
+    ahd_dir.mkdir(parents=True, exist_ok=True)
+    needs_compute = regions["region_id"].apply(
+        lambda rid: args.force or not (ahd_dir / f"region_{rid}_ahd.nc").exists()
+    )
+    batch_regions = regions[needs_compute].copy()
+    n_cached = int((~needs_compute).sum())
+    if n_cached:
+        print(f"  {n_cached} regions already cached — loading from NetCDF")
 
-    print(f"computing AHD for {len(batch_regions)} v2 regions…")
-    results = compute_ahd_batch(
+    print(f"computing AHD for {len(batch_regions)} regions…")
+    results_new = compute_ahd_batch(
         batch_regions, mosaic, ahd_dir, overwrite=args.force, region_id_col="region_id"
     )
-    # Load cached results for skipped regions so annotate_regions sees them all.
-    if not args.force and n_cached:
-        cached_results = compute_ahd_batch(
-            regions, mosaic, ahd_dir, overwrite=False, region_id_col="region_id"
-        )
-        results = cached_results
+    del batch_regions  # release geometry memory before loading cached results
+
+    # Load cached results directly from NetCDF — no GDF or DEM masking needed.
+    import xarray as xr
+    from alptherm_icon.regions.ahd import AHDProfile
+    from alptherm_icon.regions.alpine_v0_dem import RegionAHDResult
+    results_by_id = {r.region_id: r for r in results_new}
+    for rid in regions["region_id"]:
+        rid = str(rid)
+        if rid in results_by_id:
+            continue
+        nc = ahd_dir / f"region_{rid}_ahd.nc"
+        if not nc.exists():
+            continue
+        with xr.open_dataset(nc) as ds:
+            results_by_id[rid] = RegionAHDResult(
+                region_id=rid,
+                hybas_id=0,
+                region_name=f"region_{rid}",
+                mean_elev_m=float(ds.attrs.get("mean_elev_m", float("nan"))),
+                n_pixels=int(ds.attrs.get("n_pixels", 0)),
+                profile=AHDProfile(
+                    region_name=f"region_{rid}",
+                    z_bottom_m=ds["z_bottom"].values,
+                    z_top_m=ds["z_top"].values,
+                    s_g=ds["s_g"].values,
+                    v_a=ds["v_a"].values,
+                    region_area_m2=float(ds.attrs.get("region_area_m2", 0.0)),
+                ),
+            )
+
+    results = list(results_by_id.values())
     print(f"AHD profiles total: {len(results)} → {ahd_dir.relative_to(root)}")
 
     annotated = annotate_regions(regions, results)
