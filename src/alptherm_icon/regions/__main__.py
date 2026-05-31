@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 
 import json
@@ -525,15 +526,27 @@ def cmd_alpine_v2_ahd(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     root = _project_root()
     geojson_in = root / "data" / "regions" / "alpine_v2_regions.geojson"
-    mosaic = root / "data" / "dem" / "alpine_v2_dem.tif"
     ahd_dir = root / "data" / "regions" / "alpine_v2_ahd"
     geojson_out = root / "data" / "regions" / "alpine_v2_regions_annotated.geojson"
 
-    for p in (geojson_in, mosaic):
-        if not p.exists():
-            raise FileNotFoundError(
-                f"missing {p.relative_to(root)} — run alpine-v2 and alpine-v2-dem first"
-            )
+    # Accept an explicit mosaic path, or auto-detect v2 → v0 fallback.
+    if args.mosaic_path:
+        mosaic = Path(args.mosaic_path)
+    else:
+        mosaic = root / "data" / "dem" / "alpine_v2_dem.tif"
+        if not mosaic.exists():
+            fallback = root / "data" / "dem" / "alpine_v0_dem.tif"
+            if fallback.exists():
+                print(f"alpine_v2_dem.tif not found — using existing {fallback.name}")
+                mosaic = fallback
+    if not geojson_in.exists():
+        raise FileNotFoundError(
+            f"missing {geojson_in.relative_to(root)} — run alpine-v2 first"
+        )
+    if not mosaic.exists():
+        raise FileNotFoundError(
+            f"no DEM mosaic found — run alpine-v2-dem or pass --mosaic-path"
+        )
 
     regions = gpd.read_file(geojson_in)
     print(f"computing AHD for {len(regions)} v2 regions…")
@@ -693,6 +706,11 @@ def main(argv: list[str] | None = None) -> int:
         "--edges",
         action="store_true",
         help="also compute region-boundary threshold heights (plan §3.2, §5.5)",
+    )
+    p_v2_ahd.add_argument(
+        "--mosaic-path",
+        metavar="PATH",
+        help="explicit DEM mosaic (default: auto-detect alpine_v2→alpine_v0)",
     )
     p_v2_ahd.set_defaults(func=cmd_alpine_v2_ahd)
 

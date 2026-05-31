@@ -1,0 +1,24 @@
+[Unit]
+Description=ALPTHERM-ICON OGN Thermal Evaluation — daily detect + region-assign (Plan §6.2/§6.3)
+Documentation=https://github.com/alptherm-icon
+# Must not run while the OGN daemon is writing to today's log.
+After=alptherm-ogn.service
+
+[Service]
+Type=oneshot
+# Edit path if the repo lives elsewhere:
+WorkingDirectory=/root/.openclaw/workspace/alptherm-icon
+ExecStart=/root/.openclaw/workspace/alptherm-icon/ops/cron/eval.sh eval-day yesterday
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=alptherm-eval
+
+# Same light hardening as the OGN daemon.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/root/.openclaw/workspace/alptherm-icon/data
+
+[Install]
+WantedBy=multi-user.target

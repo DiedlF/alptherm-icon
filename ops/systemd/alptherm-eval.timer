@@ -1,0 +1,14 @@
+[Unit]
+Description=ALPTHERM-ICON OGN Thermal Evaluation — nightly 20:30 UTC
+Documentation=https://github.com/alptherm-icon
+
+[Timer]
+# 20:30 UTC — 2.5 h after the convective window closes (18:00 UTC summer).
+# At this point yesterday's OGN log file is complete and closed.
+OnCalendar=*-*-* 20:30:00 UTC
+# If the machine was off at 20:30, run the missed job on next boot.
+Persistent=true
+Unit=alptherm-eval.service
+
+[Install]
+WantedBy=timers.target
