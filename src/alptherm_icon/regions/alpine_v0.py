@@ -41,6 +41,7 @@ from shapely.geometry import box
 # Plan §9.2: ALPEN_BBOX entspricht der ICON-Sammelmaske. Hier wieder-
 # verwendet, damit Regions ⊂ Daten-Abdeckung bleibt.
 ALPEN_BBOX = (5.0, 43.5, 17.0, 49.0)
+MODEL_BBOX = ALPEN_BBOX  # full domain: Alps + Mittelgebirge to Donau
 
 # Plan §3.1: Liechti-Empfehlung 500–1500 km²; wir lassen 100–3000 km²
 # als "akzeptabel" durch, mit Marker für Off-Range-Fälle.
@@ -125,6 +126,59 @@ def summarise(basins: gpd.GeoDataFrame) -> AlpineBasinSummary:
         bounds=bounds,  # type: ignore[arg-type]
         total_area_km2=float(basins["area_km2"].sum()),
     )
+
+
+def build_domain_boundary(basins: gpd.GeoDataFrame) -> "shapely.geometry.base.BaseGeometry":
+    """Union of all supplied HydroBASINS polygons — the outer model domain.
+
+    Call with basins already clipped to MODEL_BBOX. The result follows real
+    watersheds (Donau in the north, Rhine/Donau Hauptwasserscheide in the
+    west) rather than the Alpine Convention perimeter (plan §3.1).
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Geometry is in a geographic CRS")
+        return basins.geometry.union_all()
+
+
+def classify_terrain_type(
+    basins: gpd.GeoDataFrame,
+    soiusa_union: "shapely.geometry.base.BaseGeometry",
+    mittelgebirge_min_relief_m: float = 400.0,
+) -> gpd.GeoDataFrame:
+    """Tag each basin with terrain_type.
+
+    alpine:        representative point inside the SOIUSA group union.
+    mittelgebirge: outside SOIUSA, elev_range_m >= mittelgebirge_min_relief_m.
+    flachland:     outside SOIUSA, elev_range_m < mittelgebirge_min_relief_m.
+    non_alpine:    outside SOIUSA, elev_range_m not yet available (pre-DEM).
+
+    If soiusa_union is empty all basins get terrain_type 'non_alpine'.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Geometry is in a geographic CRS")
+        is_alpine = basins.geometry.representative_point().apply(
+            soiusa_union.contains
+        )
+
+    has_relief = "elev_range_m" in basins.columns
+    types = []
+    for (_, row), alpine_flag in zip(basins.iterrows(), is_alpine):
+        if alpine_flag:
+            types.append("alpine")
+        elif has_relief:
+            r = row.get("elev_range_m", float("nan"))
+            if np.isfinite(r):
+                types.append(
+                    "mittelgebirge" if r >= mittelgebirge_min_relief_m else "flachland"
+                )
+            else:
+                types.append("non_alpine")
+        else:
+            types.append("non_alpine")
+
+    result = basins.copy()
+    result["terrain_type"] = types
+    return result
 
 
 def write_geojson(basins: gpd.GeoDataFrame, out_path: Path) -> None:

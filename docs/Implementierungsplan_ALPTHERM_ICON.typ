@@ -93,8 +93,9 @@
   #text(size: 20pt, weight: "bold", fill: accent)[Implementierungsplan]
   #v(0.2em)
   #text(size: 11pt, style: "italic", fill: rgb("#555555"))[
-    Reimplementierung des ALPTHERM/Regtherm-Modellansatzes für den Alpenraum
-    auf Basis von ICON-D2 / ICON-EU, Validierung gegen IGC-Streckenflugdaten
+    Reimplementierung des ALPTHERM/Regtherm-Modellansatzes für die Alpen und die
+    nördlichen Mittelgebirge bis zur Donau, auf Basis von ICON-D2 / ICON-EU,
+    Validierung gegen IGC-Streckenflugdaten
   ]
 ]
 #v(0.5em)
@@ -104,17 +105,39 @@
 = 1. Zielsetzung und Abgrenzung
 // =============================================================================
 Ziel des Projekts ist die Reimplementierung eines Thermikprognose-Modells im Sinne
-von Liechti & Neininger (1993) für den Alpenraum. Die Originalphysik des Modells —
+von Liechti & Neininger (1993). Die Originalphysik des Modells —
 Volumeneffekt, Area-Height-Distribution, 1D-Energiebilanz pro Region — wird
 beibehalten, jedoch werden alle 1994 noch empirisch parametrisierten Größen
 (Strahlungstransmission, Energieaufteilung, Bodentemperatur, großräumige Subsidenz)
 durch direkte ICON-Diagnostiken ersetzt. Das Modell agiert damit faktisch als
 topographisch hochaufgelöster Subgrid-Konvektionspostprozessor über ICON.
 
+*Modellgebiet — Alpen plus nördliche Mittelgebirge bis zur Donau:* Das Gebiet umfasst
+nicht nur den Alpenbogen, sondern reicht nach Norden bis zur Donau und schließt im
+Westen den Schwarzwald sowie dazwischen die Schwäbische Alb, das Alpenvorland und das
+Schwäbische Hügelland ein. Begründung: (1) der OGN-Stream zeichnet ohnehin bis in diesen
+Raum auf, und Schwäbische Alb / Schwarzwald sind datenreiche, aktive Streckenfluggebiete
+— vorhandenes Validierungssignal, das nicht verschenkt werden sollte; (2) diese
+Mittelgebirge sind thermisch eigenständig, kein bloßes Vorland. Die Grenzen sind
+hydrologisch sauber: Donau (Nord), Rhein-/Donau-Hauptwasserscheide (Schwarzwald-Westrand)
+— echte Wasserscheiden statt willkürlicher Linien.
+
 *Nicht Ziel:*
 - Ein operationelles Produkt auf Augenhöhe mit XC Therm (30 Jahre Tuning fehlen).
 - Reverse Engineering der XC-Therm-internen Parameter.
 - Eine eigene NWP-Komponente — ICON liefert die meteorologische Basis.
+
+#note[
+  *Externe Bestätigung des Ansatzes:* Das heutige Regtherm (Liechti, via XC Therm) nimmt
+  laut Betreiber-Doku _ICON-EU und ICON-D2_ als Input und erweitert sie um Steigwerte und
+  Wolkenbasis — also exakt der hier verfolgte Postprozessor-Ansatz auf exakt denselben
+  Modellen. Das Vorhaben rekonstruiert somit eine nachweislich produktiv genutzte
+  Architektur, nichts Exotisches. Zugleich Motivation für die _feinere, datengetriebene_
+  Validierung: AustroControl hat die Regtherm-basierten ALPTHERM-Prognosen im April 2024
+  eingestellt und durch ein rasterbasiertes Produkt ersetzt (weg von der
+  Regionszusammenfassung) — ein Hinweis, dass die genaue Regionsmethode in der Praxis als
+  verbesserungswürdig galt.
+]
 
 // =============================================================================
 = 2. Systemarchitektur
@@ -147,93 +170,145 @@ berechnet.
 
 == 3.1 Regionsdefinition
 Es existiert *keine publizierte Spezifikation*, wie Liechti die ALPTHERM/Regtherm-Regionen
-konkret geschnitten hat — die Abgrenzung wurde vermutlich manuell-meteorologisch nach
-jahrzehntelanger Erfahrung vorgenommen. Das REGTHERM-2001-Paper beschreibt nur die
-Kopplung zwischen Regionen, nicht deren Definition. Die Regionsdefinition wird daher
-selbst entwickelt, gestützt auf drei Referenzstränge: hydrologische Einzugsgebiete,
-datengetriebene Regionalisierung und Talwind-Meteorologie.
+konkret geschnitten hat. Statt die Regionen über rein statistische Kriterien selbst zu
+erfinden, wird eine *etablierte orografische Gliederung* als Sollstruktur genutzt: die
+naturräumliche Einteilung der Alpen in Gebirgsgruppen (SOIUSA gesamtalpin; AVE für die
+Ostalpen). Diese kodiert genau das, was für Thermik relevant ist — sie ist über
+Jahrzehnte von Experten entlang orografischer Gesichtspunkte und der großen Längstäler
+(Inn, Salzach, Enns, Etsch/Eisack, Gail/Drau, Mur) abgegrenzt worden. Das sind exakt die
+Talwindsysteme und orografischen Einheiten, die das Modell als Regionen braucht. Eine
+Gebirgsgruppe ist im Grunde eine _bereits von Experten gemachte_ orografische
+Regionalisierung — sie muss nicht über Clustering neu erfunden werden.
+
+#note[
+  *Warum nicht die frühere AHD-Varianz-Splittung:* Ein rein statistischer Split (Region
+  teilen, weil ihre Zahlen streuen) erzeugt zwar statistisch homogene, aber geografisch
+  willkürliche Grenzen ohne meteorologische Bedeutung. Die orografische Gliederung
+  ersetzt das durch fachlich fundierte, physisch sinnvolle Grenzen. Die Streuungsanalyse
+  bleibt erhalten — aber als _Qualitätskontrolle_ (zeigt, wo eine Gruppe doch zu
+  inhomogen ist), nicht als primäres Schnittkriterium (siehe 7.3).
+]
+
+=== Drei Geländetypen, drei Definitionslogiken
+SOIUSA/AVE decken nur die *Alpen* ab — die nördlichen Mittelgebirge (Schwarzwald,
+Schwäbische Alb) und das Flachland dazwischen fallen aus dieser Systematik heraus. Das
+erweiterte Modellgebiet (Kap. 1) hat daher drei Geländetypen mit je eigener
+Definitionslogik:
+
+#tbl(
+  columns: (auto, 1fr, 1fr),
+  header: ([Geländetyp], [Regionsdefinition], [Geometriequelle]),
+  ([Alpen], [SOIUSA/AVE-Gruppen (Experten-Orografie)], [OSM/SOIUSA-Geodaten, realisiert über HydroBASINS]),
+  ([Mittelgebirge (Schwarzwald, Alb)], [HydroBASINS-Einzugsgebiete — keine Experten-Gliederung verfügbar, Hydrologie trifft die Struktur gut], [HydroBASINS direkt]),
+  ([Flachland / Hügelland], [HydroBASINS-Einzugsgebiete, gröber], [HydroBASINS direkt]),
+)
+
+#note[
+  *Die zwei Rollen von HydroBASINS:* In den Alpen ist SOIUSA der Geometrie überlegen
+  (Experten-Orografie), dort liefert HydroBASINS vor allem die _Konnektivität_
+  (gerichteter Entwässerungsgraph $->$ Talwind-Achsen, siehe 5.5). In den Mittelgebirgen
+  und im Flachland — wo keine Experten-Gliederung existiert — liefert HydroBASINS _sowohl
+  Geometrie als auch Konnektivität_. Die ursprüngliche Idee „HydroBASINS als
+  Regionsgeometrie" war also nicht falsch, nur am falschen Ort: richtig nördlich des
+  Alpenrands, überflüssig in den SOIUSA-Alpen.
+]
+
+=== Äußerer Rand der Modelldomäne — HydroBASINS-Union
+Der äußere Perimeter wird _nicht_ über den Alpenkonventions-Perimeter (zu eng, endet am
+Gebirgsfuß) oder einen geometrischen Puffer definiert, sondern als *Union der
+HydroBASINS-Einzugsgebiete des Zielraums* (oberer Donauraum bis zur Donau im Norden,
+Neckar-/Rheinraum bis zum Schwarzwald-Westrand, Alpennordrand bis Alpensüdrand). Vorteil:
+Dieselbe Datenquelle definiert den äußeren Rand _und_ die Mittelgebirgs-/Flachlandregionen
+— kein künstlicher Puffer, der Rand folgt echten Wasserscheiden (Donau, Rhein/Donau-
+Hauptwasserscheide). Die SOIUSA-Alpen liegen darin eingebettet.
+
+#note[
+  *Innerer vs. äußerer Rand — zwei verschiedene Linien:* Der _innere_ orografische Rand
+  (SOIUSA-Union) trennt Hochgebirge von Mittelgebirge/Flachland und entscheidet damit über
+  die Modellklasse (3.1.1). Der _äußere_ Rand (HydroBASINS-Union des Zielraums) begrenzt
+  die Modelldomäne insgesamt. Der bisher in 3.1.1 als „Maske" genannte
+  Alpenkonventions-Perimeter vermengte beide Rollen — er ist eine politisch-administrative
+  Linie und für keine der beiden Aufgaben ideal; er entfällt zugunsten der klaren
+  Trennung SOIUSA-Union (innen) / HydroBASINS-Union (außen).
+]
 
 === Eckwerte:
-- Ziel: ca. 20–30 Regionen für den gesamten Alpenraum (vergleichbar Granularität alte Regtherm-Einteilung).
-- Regionsgröße: 500–1500 km² im Gebirge (Liechtis Empfehlung), Untergrenze durch ICON-Auflösung gesetzt (siehe Level-Wahl).
+- Start mit der *vollen Gruppengliederung* (AVE: 75 Gruppen allein in den Ostalpen, plus SOIUSA-Gruppen der West-/Südalpen). Zusammenlegen erst nach einem Review (siehe unten) — nicht vorab.
+- *Abgestufte Granularität nach thermischem Informationsgehalt:* Alpen fein (SOIUSA-Gruppen); Schwarzwald und Schwäbische Alb ebenfalls eher fein (thermisch interessant, datenreich); reines Flachland/Hügelland bewusst gröber (homogene Thermik, wenig Mehrwert durch feine Teilung).
+- Zielgröße perspektivisch ca. 20–30 Regionen im Gebirge (Liechti-Granularität), erreicht durch Zusammenfassen benachbarter Gruppen nach Review.
+- Untergrenze der Verfeinerung durch ICON-Auflösung gesetzt (siehe Level-Wahl).
 - Speicherung: GeoJSON-Polygone in EPSG:4326, plus Repräsentationspunkt (Centroid).
 
-=== HydroBASINS-Level-Wahl:
-HydroBASINS-Level haben keine feste Fläche, sondern eine Größenverteilung
+=== Geometriequelle — nicht die SVG, sondern echte Geodaten:
+Die bekannte Wikipedia-Alpenkarte (Alpenkarte.svg, CC BY-SA) dient nur als _visuelle
+Referenz_, welche Gruppen gewünscht sind — *nicht* als Geometriequelle: Eine SVG hat kein
+Geokoordinatensystem (Pfade in Pixelkoordinaten), Georeferenzierung wäre fehleranfällig
+und ungenau. Die echte Gruppen-Geometrie kommt stattdessen aus georeferenzierten
+Geodaten:
+- *OpenStreetMap* (Overpass-API): viele Gebirgsgruppen als Relationen / `natural=mountain_range`, direkt in Lat/Lon.
+- *Fertige Shapefiles/GeoJSON* der AVE- bzw. SOIUSA-Einteilung aus alpinen Datensammlungen.
+
+=== HydroBASINS-Level-Wahl (geometrisches Baumaterial):
+Die Gruppengrenzen aus OSM/SOIUSA sind orografisch, aber nicht zwingend deckungsgleich mit
+sauberen, DEM-konsistenten Wasserscheiden. HydroBASINS liefert das exakte, mit dem
+AHD-Volumeneffekt kompatible Geometrie-Material, aus dem die Gruppen zusammengesetzt
+werden. HydroBASINS-Level haben keine feste Fläche, sondern eine Größenverteilung
 (Pfafstetter-Subdivision: jeder Knoten teilt topologisch in 9). Relevanter Bereich:
 
 #tbl(
   columns: (auto, auto, 1fr),
   header: ([Level], [Mittlere Fläche (grob)], [Einordnung]),
-  ([7], [~1.500–5.000 km²], [Obergrenze, eher zu grob (Gebirgsgruppen)]),
-  ([8], [~500–1.500 km²], [Liechtis Zielgröße — Haupttäler (BASIS)]),
-  ([9], [~150–500 km²], [XC-Therm-Richtung — Seitentäler (Verfeinerung)]),
+  ([7], [~1.500–5.000 km²], [Obergrenze, eher zu grob (ganze Gebirgsgruppen)]),
+  ([8], [~500–1.500 km²], [Haupttäler — gutes Baumaterial-Niveau (BASIS)]),
+  ([9], [~150–500 km²], [Seitentäler — feines Baumaterial / Verfeinerung]),
   ([10], [~50–150 km²], [Einzelne Talkessel — meist zu fein]),
   ([11–12], [~13–130 km²], [Zu kleinteilig für 1D-Annahme]),
 )
-
-*Trend Alptherm $->$ XC Therm:* Das alte Alptherm/Regtherm nutzte ~31 österreichische
-Regionen (≈ Level 7–8); XC Therm rechnet heute >1300 europäische Regionen (≈ Level
-9–10). Diese Verkleinerung wurde aber erst durch bessere Trägermodelle sinnvoll — die
-1D-Annahme gilt nur, solange die Region intern halbwegs homogen konvektiv ist.
 
 #note[
   *ICON-Auflösung als physikalische Untergrenze:* Wird feiner geschnitten als die
   effektive Input-Auflösung, gewinnt man keine Information — man verteilt denselben
   Gitterpunkt auf mehrere Regionen (Scheingenauigkeit). ICON-D2 (2,2 km): Untergrenze
-  ~100–250 km² für 20–50 Gitterpunkte je Region $->$ spricht für Level 9. ICON-EU
-  (7 km): 100 km² wären nur ~2 Punkte $->$ für EU-gestützte Tage auf Level 8 bleiben
-  bzw. Level-9-Regionen für die EU-Statistik wieder aggregieren.
+  ~100–250 km² für 20–50 Gitterpunkte je Region $->$ Level 9 als feinstes sinnvolles
+  Baumaterial. ICON-EU (7 km): 100 km² wären nur ~2 Punkte $->$ für EU-gestützte Tage
+  gröbere Aggregation nutzen.
 ]
 
-*Empfehlung — Level 8 als Anker, Level 9 als Verfeinerungsreservoir:* Stufe 1 startet
-auf Level 8 (Liechti-Granularität, robust für beide ICON-Modelle). Stufe 3 verfeinert
-selektiv auf Level 9, aber nur wo die Varianzanalyse es rechtfertigt. Da HydroBASINS
-hierarchisch genestet ist, ist das Splitten trivial: Eine Level-8-Region zerfällt durch
-Anhängen einer Pfafstetter-Ziffer exakt in ihre Level-9-Kinder — ein reines
-Dissolve/Un-dissolve über die PFAF_ID, kein eigener Schnittalgorithmus nötig. Im
-Alpenvorland kehrt sich die Logik um: dort eher gröber (Level 7–8), da die Thermik
-großräumig homogen ist und Level 9 künstlich viele fast identische Regionen erzeugen
-würde.
+=== Dreistufiges Verfahren (orografisch geführt):
+*Stufe 1 — Orografische Sollstruktur (Gebirgsgruppen).* Die SOIUSA-/AVE-Gruppen aus
+OSM/Geodaten definieren, _welche_ Regionen es geben soll — die meteorologisch-orografische
+Struktur, welche Massive und Täler eine thermische Einheit bilden. Start mit der vollen
+Gruppengliederung.
 
-=== Dreistufiges Verfahren:
-*Stufe 1 — Geometrisches Gerüst (Einzugsgebiete).* Talwindsysteme folgen
-Einzugsgebieten; die natürlichste Regionsgrenze ist daher die topographische
-Wasserscheide. Basis: HydroBASINS (Pfafstetter-codiert, hierarchisch) bzw. EU-Hydro
-(Copernicus, feiner für Europa), zugeschnitten auf die Zielgröße. Liefert physikalisch
-motivierte, räumlich zusammenhängende Startregionen ohne Tuning.
+*Stufe 2 — Geometrische Realisierung aus HydroBASINS.* Die HydroBASINS-Teileinzugsgebiete
+(Level 8–9) werden so gruppiert/aggregiert, dass sie die Gruppen aus Stufe 1 mit sauberen,
+DEM-konsistenten Wasserscheiden nachbilden. Ergebnis: orografisch sinnvolle Regionen mit
+exakter, AHD-kompatibler Geometrie. Die Hauptkamm-Regel ist dabei automatisch erfüllt, da
+die Gruppengliederung ohnehin nicht über Hauptkämme schneidet.
 
-*Stufe 2 — Manuelle meteorologische Korrektur.* Hauptkamm-Teilung erzwingen
-(Nord-/Zentral-/Südalpen trennen). Keine Region darf über den Alpenhauptkamm schneiden,
-da Nord- und Südseite gegenläufige thermische Tagesgänge haben. Talverzweigungen als
-natürliche Grenzen. Dies ist die einzige Stufe mit bewusst eingebrachtem
-meteorologischem Erfahrungswissen.
-
-*Stufe 3 — Datengetriebene Verfeinerung.* Regionen mit dauerhaft hoher
-regionsinterner Varianz (HBAS_SC, Windrichtung) werden identifiziert und entlang
-topographischer Strukturen gesplittet (vgl. Abschnitt 7.3). Werkzeug: räumliche
-Clustering-Verfahren mit Kontiguitäts-Constraint (PySAL/spopt: max_p_regions, skater,
-region_k_means). Attribute: mittlere Geländehöhe, Exposition, saisonale ICON-Statistik.
-Normale Cluster-Verfahren (k-means) sind ungeeignet, da sie keine zusammenhängenden
-Gebiete garantieren.
+*Stufe 3 — Review und Zusammenlegung.* Nach Aufbau der vollen Gruppenmenge: Bias- und
+Streuungsanalyse (vgl. 7.3) zeigt, welche Gruppen zu inhomogen sind (selten — eher
+Hinweis auf nötige _weitere_ Teilung) und welche benachbarten Gruppen sich thermisch so
+ähnlich verhalten, dass sie zusammengelegt werden können (Richtung Zielgröße 20–30). Die
+Streuungsanalyse ist hier _Qualitätskontrolle_, nicht primäres Schnittkriterium.
 
 #note[
-  *Historische Daten für Stufe 3 — wichtige Entkopplung:* Der DWD Open Data Server hält
-  nur ein rollierendes 2-Tage-Fenster vor; ein Langzeitarchiv der GRIB2-Läufe existiert
-  öffentlich nicht. Stufe 3 benötigt jedoch _keine_ echten Vorhersagen, sondern nur die
-  räumliche _Klimatologie_ der Streuungsmuster. Stufe 3 wird daher von der operationellen
-  Pipeline (Komp. B) entkoppelt und auf einen bereits existierenden Archiv-/Reanalyse-
-  Datensatz gestützt (siehe Anhang 13.4). Damit ist kein monatelanges Vorab-Sammeln
-  nötig — Stufe 3 ist sofort startbar.
+  *Historische Daten für die Streuungsanalyse — wichtige Entkopplung:* Der DWD Open Data
+  Server hält nur ein rollierendes 2-Tage-Fenster vor. Die Streuungsanalyse benötigt
+  jedoch _keine_ echten Vorhersagen, sondern nur die räumliche _Klimatologie_ der
+  Streuungsmuster. Sie wird daher von der operationellen Pipeline (Komp. B) entkoppelt und
+  auf einen bereits existierenden Archiv-/Reanalyse-Datensatz gestützt (siehe Anhang
+  13.4) — kein monatelanges Vorab-Sammeln nötig.
 ]
 
 #note[
   *Physikalische Leitplanken (Whiteman; Zardi & Whiteman):* Eine Region umfasst ein
   zusammenhängendes Talwindsystem; Becken und Täler werden getrennt behandelt
-  (beckenspezifischer Volumeneffekt); nicht über Hauptkämme schneiden.
+  (beckenspezifischer Volumeneffekt); nicht über Hauptkämme schneiden. Die orografische
+  Gruppengliederung erfüllt diese Leitplanken bereits von Natur aus.
 ]
 
-== 3.1.1 Sonderfall Alpenrand — Quer-Segmentierung langer Täler
+== 3.1.1 Geländeübergänge — Quer-Segmentierung und Modellklassen
 HydroBASINS-Einzugsgebiete am Alpenrand (z.B. Iller, Lech, Salzach) erstrecken sich vom
 Hauptkamm bis tief ins Vorland. Als _eine_ Region behandelt würden sie
 Hochgebirgsthermik (3000 m, steile Heizflächen, später Onset, hohe Basis) mit
@@ -243,24 +318,29 @@ Talachse (Talwind), aber die falsche _quer_ dazu (thermische Homogenität). Lös
 zusätzlicher Schnitt nach Geländecharakter.
 
 - *Relief-/Höhen-Segmentierung:* Lange Einzugsgebiete in Hochgebirgs-, Voralpen- und Flachlandsegment zerlegen. Indikator: Reliefenergie (max−min Höhe im gleitenden Fenster) plus mittlere Höhe.
-- *Alpenkonvention-Perimeter als physiographische Maske:* Die etablierte, frei verfügbare Alpenraum-Abgrenzung (alternativ Alpine Space) schneidet genau dort, wo das physikalische Regime wechselt.
-- *Vorland als eigene Regionsklasse:* Das Alpenvorland wird mit-vorhergesagt, aber mit anderem Modellverhalten (siehe Kasten).
+- *Innerer Rand (SOIUSA-Union):* trennt die Hochgebirgs-Modellklasse von Mittelgebirge/Flachland (vgl. Rand-Logik in 3.1).
+- *Mehrere Modellklassen statt nur Gebirge/Vorland:* siehe Kasten.
 
 #note[
-  *Alpenvorland-Modellklasse:* Im Flachland ist die Thermik annähernd horizontal
-  homogen — Liechtis AHD-Volumeneffekt ist dort nicht gültig. Vorland-Regionen werden
-  daher als vereinfachtes Mixed-Layer-Modell auf Basis derselben ICON-Wärmeströme
-  (ASHFL_S, ALHFL_S) geführt, ohne Talvolumen-Logik. Liefert trotzdem Onset, CBL-Höhe
-  und Steigwerte. Die Regionsgeometrie im Vorland kann gröber sein.
+  *Drei Modellklassen mit kontinuierlichem Übergang:* Statt einer harten Zweiteilung
+  Gebirge/Vorland hat das erweiterte Gebiet drei Charaktere: (1) *Hochgebirge* (Alpen) —
+  voller AHD-Volumeneffekt; (2) *Mittelgebirge* (Schwarzwald, Schwäbische Alb) —
+  _abgeschwächter_ Volumeneffekt (reale, aber geringere Reliefenergie; die Alb mit
+  markantem Albtrauf = Hangthermik plus flacher Karst-Hochfläche, der Schwarzwald höher
+  und bewaldeter); (3) *Flachland/Hügelland* — Mixed-Layer ohne Volumeneffekt, auf Basis
+  derselben ICON-Wärmeströme (ASHFL_S, ALHFL_S). Statt drei diskreter Schubladen bietet
+  sich an, den Volumeneffekt-Anteil _kontinuierlich_ über die ohnehin pro Region
+  berechnete Reliefenergie zu steuern — eine Region mit mittlerer Reliefenergie bekommt
+  einen mittleren Volumeneffekt. Das vermeidet künstliche Klassengrenzen und bildet den
+  fließenden Übergang Alpen $->$ Voralpen $->$ Mittelgebirge $->$ Flachland natürlich ab.
 ]
 
 *Wichtig — Talwind-Konnektivität bewahren:* Ein Quer-Schnitt zertrennt ein
 zusammenhängendes Talwindsystem. Der Talwind transportiert Feuchte und Luftmasse vom
-Vorland ins Gebirge (genau der Regtherm-Kopplungsmechanismus, siehe 5.6). Die Segmente
+Vorland ins Gebirge (genau der Regtherm-Kopplungsmechanismus, siehe 5.5). Die Segmente
 werden daher geometrisch getrennt, aber in der Kopplungsstufe als vertikal benachbarte,
 gekoppelte Regionen wieder verbunden. Jeder Schnitt entspricht so einer physikalischen
-Grenze: Wasserscheide (längs), Alpenrand (Regimewechsel), Reliefstufe (Gültigkeit des
-Volumeneffekts).
+Grenze: Wasserscheide (längs), Reliefstufe (Gültigkeit des Volumeneffekts).
 
 == 3.2 AHD-Berechnung
 Input: Copernicus DEM GLO-30 (~30m). Pro Region:
@@ -269,7 +349,7 @@ Input: Copernicus DEM GLO-30 (~30m). Pro Region:
 - $V_a (z)$ = Differenz zwischen Maximalvolumen einer 100m-Schicht und dem von Topographie eingenommenen Volumen.
 - Ergänzend: mittlere Hangneigung und Exposition pro Höhenklasse — Erweiterungs-Hook für Richters Kritik an steilen Heizflächen.
 
-=== Zusätzlich — Schwellenhöhen des Regionsgraphen (für die Kopplung, 5.6):
+=== Zusätzlich — Schwellenhöhen des Regionsgraphen (für die Kopplung, 5.5):
 Neben den AHD-Profilen je Region wird pro Regions_nachbarschaft_ (Kante des
 Nachbarschaftsgraphen) die effektive Schwellenhöhe bestimmt: die niedrigste Stelle im
 DEM entlang der gemeinsamen Polygongrenze, relativ zu den Talböden beider Regionen.
@@ -300,7 +380,6 @@ Forecast-Schritte stündlich.
   ([Wärmeströme], [ASHFL_S, ALHFL_S], [Sensibler/latenter Wärmestrom direkt]),
   ([Bewölkung], [CLCT_MOD, CLCH, CLCM, CLCL], [Bewölkungseinfluss bereits in Strahlung]),
   ([Bodennahe Größen], [T_2M, TD_2M, T_G, RELHUM_2M], [Bodentemperatur, Feuchte, $T_S$ statt δ·P]),
-  ([Bodenwind], [U_10M, V_10M, VMAX_10M], [Wind-Veto für Gleitschirm-Profil (5.5); Talwind-Proxy]),
   ([Konvektions-Diag.], [HBAS_SC, HTOP_SC], [Cu-Basis (Tuning-Target für Cu-Tage)]),
   ([], [HBAS_CON, HTOP_CON], [Hochreichende Konv. $->$ Ausschlusskriterium]),
   ([], [HTOP_DC], [Trockenkonvektion (Blue-Day Validierung)]),
@@ -310,39 +389,22 @@ Forecast-Schritte stündlich.
 )
 
 #note[
-  *ICON-D2 vs. ICON-EU Verfügbarkeit (per HTTP-Probe verifiziert,
-  Stand 2026):* Die beiden Modelle publizieren _nicht_ die gleichen
-  Variablen — eine direkte Folge der unterschiedlichen Auflösungen.
-  ICON-D2 (2,2 km) löst flache Cumulus-Konvektion explizit auf und
-  liefert dafür ``hbas_sc / htop_sc``; ICON-EU (7 km) ist dafür zu
-  grob, hat dafür die parametrisierte Tiefkonvektions-Diagnostik
-  ``hbas_con / htop_con``. Vier Variablen aus der ICON-Allgemein-
-  Literatur publiziert DWD bei _keinem_ der beiden Modelle.
+  *ICON-D2 vs. ICON-EU Verfügbarkeit:* Die Namen oben folgen der allgemeinen
+  ICON-Konvention. Für ICON-D2 publiziert DWD Open Data einen Teil davon nicht;
+  im Code (Komp. B Archiv) werden folgende Substitute verwendet:
 
   #tbl(
-    columns: (auto, auto, auto, 1fr),
-    header: ([Variable], [ICON-D2 (2,2 km)], [ICON-EU (7 km)], [Bemerkung]),
-    ([T_2M, TD_2M, T_G, RELHUM_2M], [✓], [✓], [Bodennahe Standardfelder]),
-    ([ASOB_S, ATHB_S, ASHFL_S, ALHFL_S], [✓], [✓], [Strahlung + Wärmeströme (akkumuliert)]),
-    ([CLCT_MOD], [✓], [✓], [Bewölkungsgrad]),
-    ([CAPE_ML, CIN_ML, HZEROCL], [✓], [✓], [Konvektions-Diagnostik]),
-    ([TOT_PREC], [✓], [✓], [15-min-Sub-Steps bei D2, $S$9.7]),
-    ([HTOP_DC], [✓], [✓], [Trockenkonv.-Top — Blue-Day-Indikator]),
-    ([MH], [✓], [✓], [Mixed Layer Depth — Substitut für HPBL]),
-    ([HBAS_SC, HTOP_SC], [✓], [— *fehlt*], [Shallow conv. — explizit nur in D2 aufgelöst]),
-    ([HBAS_CON, HTOP_CON], [— *fehlt*], [✓], [Deep conv. — parametrisiert nur in EU]),
-    ([HPBL], [— *fehlt*], [— *fehlt*], [Plan-Name, real nicht publiziert → MH nutzen]),
-    ([LCL_ML], [— *fehlt*], [— *fehlt*], [nicht publiziert → HBAS_SC als Cu-Basis-Proxy]),
-    ([T, QV, U, V, W, TKE], [model-level], [model-level], [Tier-2-Profile]),
-    ([HHL], [time-invariant], [time-invariant], [Halbschichthöhen, 00-UTC-Init]),
+    columns: (auto, auto, 1fr),
+    header: ([Plan-Name (ICON-EU)], [ICON-D2], [Substitut / Bemerkung]),
+    ([HPBL], [—], [*MH* (Mixed Layer Depth, m AGL) — bei konvektiver Tages-Grenzschicht $approx$ HPBL]),
+    ([HBAS_CON, HTOP_CON], [—], [kein direktes Pendant; hochreichende Konv. wird über TOT_PREC + CAPE_ML klassifiziert]),
+    ([LCL_ML], [—], [kein Pendant; HBAS_SC trägt vergleichbare Information (Cu-Basis $approx$ LCL)]),
+    ([TKE], [✓], [nur als Modelllevel-Profil (3D), nicht als Surface-Diagnostik — wandert in Tier 2]),
+    ([CIN_ML, HZEROCL], [✓], [verfügbar wie aufgelistet, wandern in Tier 1]),
   )
 
-  *Konsequenz für Komp. B:* Tier-1-Sammlung schreibt 17 Surface-Vars
-  (D2-Tageskandidat), Tier-2 zieht volle Modelllevel-Profile inkl.
-  TKE. EU-gestützte Tage (Tag 2–5) nutzen die EU-Spalte — ``HBAS_SC``
-  fällt dann weg, ``HBAS_CON`` kommt dazu. Das Auswerteschicht-Mapping
-  (Komp. C) muss beim Modellwechsel die richtige Konvektions-Variable
-  greifen.
+  An Tagen, an denen ICON-EU zum Einsatz kommt (Tag 2–5), gelten die
+  originalen Variablennamen unverändert.
 ]
 
 == 4.2 Pipeline-Schritte
@@ -381,7 +443,7 @@ Tendenz, sondern auch die Streuung* behalten wird:
 
 == 4.5 Eigenes Archiv ab Projektbeginn aufbauen
 Da der DWD Open Data Server nur ein 2-Tage-Fenster vorhält, sollte ab Tag 1 des Projekts
-ein eigener Cron-Job die benötigten ~15 Variablen für die Alpen-Bounding-Box täglich
+ein eigener Cron-Job die benötigten ~15 Variablen für die Gebiets-Bounding-Box (Alpen + Mittelgebirge bis Donau) täglich
 abgreifen und persistent speichern. Bis Komponente C steht, ist so bereits eine eigene
 Saison beisammen — ohne Abhängigkeit von Drittarchiven. Für die Historie davor dienen
 die externen Archive aus Anhang 13.4.
@@ -458,44 +520,7 @@ Pro Zeitschritt Δt (vorgeschlagen 2 min, wie Original):
 Geschätzt 4–6 Wochen für eine saubere, vektorisierte numpy-Implementierung mit Tests
 gegen Liechtis Beispielfall (Subsidenz-Sensitivität, Fig. 4 im Originalpaper).
 
-== 5.5 Aircraft-Profile — getrennte Prognose Gleitschirm / Segelflug
-Gleitschirm und Segelflug nutzen _dieselbe_ Luft unterschiedlich. Die
-teure Physik (CBL-Evolution, Steigprofil $v(z,t)$, Wolkenbasis) wird
-*einmal* pro Region gerechnet; die typspezifische Prognose ist eine
-dünne Post-Processing-Schicht darüber — kein zweites Modell.
-
-#tbl(
-  columns: (auto, 1fr, 1fr),
-  header: ([Faktor], [Gleitschirm], [Segelflug]),
-  ([Eigensinken / Polare], [~1,0 m/s, kreist eng — nutzt schwache/enge Bärte], [andere Polare, schneller — braucht stärkere/breitere Bärte]),
-  ([Nutzbares Steigen], [niedrigere Schwelle], [höhere Schwelle]),
-  ([Obergrenze], [selten > 3500–4000 m, oft nur unterer Schichtteil], [bis Wolkenbasis / volle Schichtdicke]),
-  ([Wind], [hartes Veto bei > ~25–30 km/h bzw. Böen/Turbulenz], [weit toleranter]),
-  ([Tageszeit], [früher/sanfter; Mittagsrauheit problematisch], [Mittagspeak gewünscht]),
-)
-
-Jedes Profil ist also ein Parametersatz
-``{Polare/Sinken, Obergrenzen-Regel, Wind-Veto, Tageszeit-Präferenz}``,
-angewandt auf den geteilten CBL-Output. Daraus folgt pro Region und
-Zeit-Bin eine _typspezifische_ Aussage: nutzbares Netto-Steigen,
-nutzbare Höhe, "fliegbar ja/nein" (für Gleitschirm v.a. das Wind-Veto).
-
-#note[
-  *Warum das elegant ist:* Die Validierung kommt gratis aus OGN —
-  der Stream trennt Flugzeugtyp (FLARM/FANET ``aircraft_type``), die
-  Thermik-Statistik pro Region (§7.6) lässt sich nach Typ splitten,
-  jedes Profil empirisch separat tunen. Gleitschirm-Prognosen sind
-  zudem unterversorgt; der Mehrwert ist hoch bei kleinem Zusatzaufwand
-  (geteilte Physik).
-
-  *Zwei Voraussetzungen:* (1) Das Wind-Veto braucht Bodenwind —
-  ``U_10M / V_10M / VMAX_10M`` sind dafür in die Tier-1-Variablenliste
-  aufgenommen (§4.1). (2) Das per-Typ-Tuning braucht die bereinigte
-  OGN-``aircraft_type``-Zuordnung über die Device-DB (§9.5-Caveat), da
-  der rohe Typ-Tag verrauscht ist.
-]
-
-== 5.6 Regionale Kopplung (Regtherm-Mechanismus)
+== 5.5 Regionale Kopplung (Regtherm-Mechanismus)
 Das Original-ALPTHERM (1993) behandelt jede Region isoliert. Liechti (2002) erweiterte
 es zu Regtherm durch *horizontale Kopplung benachbarter Regionen*, um
 Sekundärzirkulationen — Talwindsysteme und Seebrisen — zu erfassen. Relevant aus zwei
@@ -525,8 +550,10 @@ Austauschterm zwischen den vorhandenen 1D-Regionssäulen. Der abgebildete Kreisl
   columns: (auto, auto, 1fr),
   header: ([Input], [Quelle], [Rolle]),
   ([CBL-Temperaturprofil je Region], [Modellkern (C) selbst], [Treibt Dichte-/Druckunterschied]),
+  ([Konnektivitätsgraph (wer grenzt an wen, Fließrichtung)], [HydroBASINS (A)], [Welche Regionen koppeln und in welche Richtung]),
   ([Geometr. Nachbarschaft + Distanz], [Regionsdefinition (A)], [Gradient = Δp / Δx]),
   ([Höhendifferenz der Regionsböden], [DEM (A)], [Geopotential-Bezug]),
+  ([Schwellenhöhe je Kante], [DEM (A), siehe 3.2], [Durchlässigkeit / Grenztyp]),
   ([Synoptischer Wind (U/V auf Levels)], [ICON], [Modulator: Zusammenbruch bei Starkwind, Advektion]),
   ([Feuchteprofil je Region], [Modellkern + ICON-Init.], [Was der Talwind an Feuchte transportiert]),
 )
@@ -534,6 +561,27 @@ Austauschterm zwischen den vorhandenen 1D-Regionssäulen. Der abgebildete Kreisl
 Der synoptische Wind aus ICON ist also sehr wohl ein Input — aber als _Modulator_
 (Steigwert-Reduktion via f_kin, Zusammenbruch der Zirkulation bei Starkwind,
 Luftmassen-Advektion), nicht als Treiber der Sekundärzirkulation selbst.
+
+#note[
+  *Konnektivitätsgraph aus HydroBASINS — der eigentliche Hauptwert:* HydroBASINS ist nicht
+  nur eine Polygonsammlung, sondern ein _gerichteter Entwässerungsgraph_ (jedes Teilgebiet
+  hat ein "fließt-in"-Attribut über die Pfafstetter-Codierung). Daraus ergeben sich direkt:
+  _welche_ Regionen benachbart sind und die _Fließrichtung_ — und da Talwinde tagsüber
+  talaufwärts wehen (entgegen der Fließrichtung), liefert der Graph genau die Richtung der
+  gerichteten, tageszeitabhängigen Kopplung. HydroBASINS sagt _ob_ und _in welche
+  Richtung_ gekoppelt wird, die DEM-Schwellenhöhe sagt _wie stark_.
+]
+
+#note[
+  *Caveat — hydrologische ≠ atmosphärische Konnektivität:* Der HydroBASINS-Graph kodiert,
+  wer wohin entwässert — ein exzellenter Proxy für talgebundene Talwindkopplung, aber
+  nicht vollständig. Zwei Täler, die über einen Pass _atmosphärisch_ koppeln (Überströmen
+  bei hoher CBL, Typ 3 der Grenztypologie), aber in verschiedene Flusssysteme entwässern,
+  haben im HydroBASINS-Graph _keine_ Kante. Solche Pass-Kopplungen müssen über die
+  DEM-Schwellenhöhen-Analyse (3.2) ergänzt werden. HydroBASINS liefert also das Grundgerüst
+  des Kopplungsgraphen (der Großteil, talgebunden), die Schwellenhöhen-Analyse ergänzt die
+  hydrologisch unsichtbaren Pass-Verbindungen.
+]
 
 === Grenztypologie — eigene Weiterentwicklung über publiziertes Regtherm hinaus:
 Das publizierte Regtherm behandelt Regionsnachbarschaften pauschal. Tatsächlich ist eine
@@ -676,75 +724,25 @@ aufbereitet).
   Sofortmaßnahmen (siehe Kap. 9 und M0).
 ]
 
-== 6.7 WeGlide × OGN Crossmapping
-WeGlide und OGN beschreiben oft _denselben_ Flug aus zwei
-unterschiedlichen Blickwinkeln — der eine als kuratierten, scoring-
-fähigen Track mit Pilot- und Maschinen-Metadaten, der andere als
-zeitlich-feiner Position-Stream ohne Identität. Eine systematische
-Zuordnung der beiden Quellen liefert drei eigenständige Werte und
-sollte daher von Beginn an mitgeplant werden.
+== 6.7 XContest — optionale Quelle mit Zugangsvorbehalt (nicht gleichwertig)
+XContest ist die etablierte Gleitschirm-/Drachen-Wettbewerbsplattform und hätte gerade in
+klassischen Alpen-Gleitschirmregionen (Stubai, Tessin, Slowenien) teils höhere Flugdichte
+als WeGlide. Es wird hier aber *bewusst nicht als gleichwertige dritte Säule* aufgenommen,
+sondern nur als bedarfsgetriebene Option vermerkt. Drei Gründe:
 
-=== Drei Zwecke der Zuordnung:
-+ *Deduplizierung im Tuning-Sample:* Wenn ein WeGlide-Flug von Aircraft X
-  zur Zeit T mit einem OGN-Track von FLARM-ID Y kollidiert (gleicher
-  Ort, gleiche Zeit, ähnliche Geometrie), dann _ist_ es derselbe Flug.
-  Würden wir beide unabhängig in die Tuning-Statistik einspeisen, hätten
-  wir Doppelgewichtung. Das Crossmapping markiert die Paare und lässt
-  Komp. E pro Flug nur eine Quelle (die mit höherer Datenqualität:
-  WeGlide-IGC mit 1-Sekunden-Track) nutzen, ohne das jeweils andere zu
-  verwerfen.
-+ *Validierung der WeGlide-Notwendigkeit:* Vor M5 ist offen, ob OGN
-  eine WeGlide-Abdeckung _allein_ ersetzen könnte. Erst nach 1–2
-  Wochen paralleler Sammlung können wir empirisch sagen: "X % der
-  Alpenflüge erscheinen in beiden, Y % nur in WeGlide, Z % nur in OGN".
-  Das ist die einzige verlässliche Antwort auf die Frage, ob der
-  WeGlide-API-Zugang (mit ToS-Aufwand, siehe 6.5) wirklich nötig ist
-  oder ob OGN-Roh-Logs ausreichen.
-+ *Coverage-Gap-Detektion:* WeGlide hat Flüge, die OGN aufgrund von
-  defektem FLARM, ausgeschaltetem Transponder oder Funkschatten nicht
-  gesehen hat — und _umgekehrt_, OGN sieht Aircraft ohne WeGlide-Upload
-  (Privatpiloten ohne Account, ältere Geräte ohne Auto-Upload). Beide
-  Differenzmengen sind diagnostisch wertvoll (siehe nächster Abschnitt).
+- *Restriktiverer Zugang:* Anders als WeGlides offene, ausdrücklich erwünschte Lese-API ist XContest geschützter. Eine API existiert (XContest/Leonardo), ist aber kein anonymer Self-Service — Zugang läuft partnerschaftlich/auf Anfrage. Systematisches Scrapen öffentlich sichtbarer Flüge ist ToS-rechtlich Grauzone bis Nein; das "öffentlich sichtbar = frei abrufbar"-Prinzip von WeGlide gilt hier _nicht_.
+- *Inhaltliche Überschneidung:* Der Mehrwert (mehr Gleitschirmdaten) wird bereits durch OGN (flüchtige Live-Gleitschirmquelle, 6.6) und WeGlide (permanente, aufbereitete Quelle, zunehmend auch Gleitschirme) abgedeckt. XContest fügt vor allem regionale _Dichte_ hinzu, keine neue Datenqualität.
+- *Aufwand-Nutzen:* Erheblicher Zugangs-/ToS-Aufwand mit ungewissem Ausgang für begrenzten zusätzlichen Gewinn.
 
-=== Zuordnungsweg:
-WeGlide-API liefert pro Flug die Aircraft-Registration ("D-1234"), oft
-auch ICAO-Hex oder FLARM-ID als Metadatum. OGN-Beacons tragen die
-APRS-Sender-ID (``FLR<DDDDDD>``, ``ICA<HEX>``, ``OGN<...>``) und sind
-über die freie *OGN Device Database*
-(``ddb.glidernet.org``) auf Registrierungen abbildbar. Das ergibt eine
-3-stufige Pipeline:
-
-#tbl(
-  columns: (auto, 1fr, 1fr),
-  header: ([Stufe], [Methode], [Robust gegen]),
-  ([1 — direkt], [WeGlide-Aircraft-ID vs. OGN-Device-DB], [glatter Fall: registrierte FLARM-IDs]),
-  ([2 — Zeit+Ort], [Track-Overlap-Score (≥ 80 % räumlich-zeitlich)], [Device-DB unvollständig oder OGN-ID privat]),
-  ([3 — manuell], [Verein-spezifische Watchlist (Plan §10.3)], [nichts findet — Hand-Mapping als letztes Mittel]),
-)
-
-Die DB-Tabelle in Stufe 1 wird einmal pro Woche aktualisiert
-(``ddb.glidernet.org/download/?j=1`` als JSON). Stufe 2 fängt den
-Long-Tail, der häufiger ist als man denkt: ~30 % der Aircraft setzen
-ihre OGN-ID auf "privat" (``no-track``-Flag respektieren wir natürlich,
-aber das Track-Overlap funktioniert trotzdem auf den anonymisierten
-Daten, weil wir nur _existenz_ feststellen).
-
-=== "FLARM-loses" Subsample — die WeGlide-only-Flüge
-Die Differenzmenge _WeGlide ∖ OGN_ ist besonders diagnostisch:
-- *Defektes / abgeschaltetes FLARM*: Aircraft hat geflogen (in WeGlide,
-  via IGC-Logger nachvollziehbar), aber OGN sieht nichts → klare
-  Empfehlung an den Piloten/Werkstatt.
-- *Funkschatten / Coverage-Lücke*: Aircraft fliegt in einer Region ohne
-  OGN-Empfängerabdeckung. Reichweiten-Analyse aus 10.3.x. Tritt der
-  Schatten systematisch in derselben Talregion auf, lohnt sich ein
-  zusätzlicher Empfänger.
-- *Außerhalb der Alpen-Bbox*: WeGlide trackt Flüge weltweit, OGN-
-  Mitschnitt ist auf Alpen-Geofilter beschränkt. Erwartete Differenz,
-  kein Issue.
-
-Im Dashboard erscheint dieses Subsample als eigene Liste auf der
-Vereinsflug-Seite (10.3) — pro vermisstem Flug Datum, Route, vermutete
-Ursache.
+#note[
+  *Bedarfsgetriebene Strategie:* WeGlide + OGN sind die zwei tragenden Säulen. Stellt sich
+  später heraus, dass eine bestimmte Gleitschirm-Region für belastbares Tuning zu dünn
+  besetzt ist, dann gezielt Datenzugang bei XContest anfragen (support\@xcontest.org, mit
+  Projektbeschreibung: wissenschaftlich, nicht-kommerziell) — also vorsorglich _nicht_,
+  sondern nur wenn eine konkrete Lücke es rechtfertigt. Hinweis: Die genauen aktuellen
+  XContest-API-ToS waren nicht im Volltext verifizierbar; eine direkte Anfrage schafft
+  Klarheit über Zugang und Bedingungen.
+]
 
 // =============================================================================
 = 7. Komponente E — Validierung und Parametertuning
@@ -770,8 +768,16 @@ Die Tageklassifikation erfolgt automatisch aus ICON-Diagnostik:
   header: ([Tagestyp], [Erkannt durch], [Validierungs-Target], [Was wird kalibriert]),
   ([Cu-Tag], [HBAS_SC gültig], [HBAS_SC + IGC-Maxhöhen], [Feuchteprozess, LCL-Verhalten]),
   ([Blue Day], [HBAS_SC fehlt, HTOP_DC niedrig], [HTOP_DC + IGC-Maxhöhen], [CBL-Energiebilanz, Entrainment]),
-  ([Gewittertag], [HBAS_CON gesetzt], [Tag ausschließen], [—]),
+  ([Gewittertag], [TOT_PREC + CAPE_ML über Schwelle (D2); HBAS_CON wo verfügbar (EU)], [Tag ausschließen], [—]),
 )
+
+#note[
+  *Modellabhängige Gewitter-Erkennung:* ICON-D2 publiziert kein HBAS_CON (siehe 4.1) — die
+  hochreichende Konvektion wird dort über TOT_PREC + CAPE_ML klassifiziert. Nur an den
+  ICON-EU-gestützten Tagen (Tag 2–5) steht HBAS_CON direkt zur Verfügung. Die
+  Klassifikationslogik muss daher modellabhängig sein, damit sie auch mit dem Hauptmodell
+  D2 (Tag 0–2) funktioniert.
+]
 
 #note[
   *Vermeidung von Zirkularität:* Die Basishöhe wird primär gegen die ICON-Diagnostiken
@@ -783,11 +789,12 @@ Die Tageklassifikation erfolgt automatisch aus ICON-Diagnostik:
 == 7.3 Regionsinterne Streuung als doppeltes Signal
 Die in Komponente B berechnete regionsinterne Streuung (siehe 4.3) wird zweifach genutzt:
 - *Als Unsicherheitsmaß der Prognose:* Hohe Streuung signalisiert eine unsichere bzw. inhomogene Vorhersage.
-- *Als Qualitätskriterium der Regionsdefinition:* Dauerhaft hohe Varianz $->$ Region zu groß oder schneidet Luftmassengrenze $->$ Split-Kandidat.
+- *Als Qualitätskontrolle der orografischen Regionsdefinition (3.1, Stufe 3):* Dauerhaft hohe Varianz innerhalb einer Gebirgsgruppe $->$ Hinweis, dass die Gruppe doch zu inhomogen ist und feiner geteilt werden sollte; sehr ähnliches Verhalten benachbarter Gruppen $->$ Kandidaten fürs Zusammenlegen Richtung Zielgröße.
 
-Damit schließt sich der iterative Regionsschnitt aus Komponente A: Regionen nach
-mittlerer saisonaler HBAS_SC-Standardabweichung ranken, oberste Kandidaten entlang
-topographischer Strukturen aufteilen.
+Die Streuung ist hier _Qualitätskontrolle_ der von Experten vorgegebenen Gruppengrenzen,
+nicht das primäre Schnittkriterium: Regionen nach mittlerer saisonaler
+HBAS_SC-Standardabweichung ranken, Auffälligkeiten gegen die orografische Struktur prüfen
+und gezielt teilen oder zusammenlegen.
 
 == 7.4 Tuning-Strategie
 - Initialisierung mit Liechtis Originalwerten.
@@ -801,43 +808,7 @@ topographischer Strukturen aufteilen.
 - RMSE der Basishöhe vs. HBAS_SC < 200 m
 - Klassifikationsgüte Tagestypen (Cu/Blue/Gewitter) > 85% gegen IGC-Realität
 - Saisonale Bias-Stabilität: kein Trend April–September
-
-== 7.6 Thermik-Statistik pro ALPTHERM-Region
-Über das punktuelle Tuning hinaus liefert die Aggregation aller
-detektierten Kreisflüge pro Region eine eigene Auswerteachse —
-sowohl als Diagnose-Werkzeug für 7.3 (Streuungs-Quelle) als auch als
-Endkunden-Feature für die Webdarstellung.
-
-=== Was wird pro Region aggregiert:
-+ *Anzahl detektierter Thermik-Zentren* pro Tag, Monat, Saison —
-  primäres "Dichte"-Maß. Quelle: Kreisflug-Detektion aus 6.2 auf
-  IGC- _und_ OGN-Tracks zusammen (per 6.7 dedupliziert).
-+ *Median- und Q90-Steigwerte* je Tageszeit-Bin (z.B. 09–11 / 11–13 /
-  13–15 / 15–17 UTC) — direkter Tuning-Target-Input für Bart-Skalierung
-  und Tagesgang-Form ($Delta T_0$, $P_0$).
-+ *Höhenverteilung der Kreisflüge* — Basishöhe und Topphöhe als
-  Boxplot pro Region. Dient als ICON-unabhängige Plausibilitäts-
-  Referenz zu HBAS_SC / HTOP_DC.
-+ *Saisonale Häufigkeitsprofile* — wann ist diese Region "auf" und
-  wann tot. Validiert die Region als überhaupt fluggeeignet (Eingangs-
-  Kriterium für 8.2 Tuning-Sample-Auswahl).
-+ *Anteil Blue-Day-Flüge vs. Cu-Tag-Flüge* — Korrelation mit dem 9.2-
-  Trigger, also Validierung der Trigger-Klassifikation aus 7.2.
-
-=== Ausgabeformate:
-- *Pro-Region-Steckbrief* als ein PDF/HTML pro Region — schnell teilbar
-  mit Vereinen, die ihr Hausgebiet sehen wollen.
-- *Vergleichs-Heatmap* auf dem Dashboard (Plan §10): Y-Achse Region,
-  X-Achse Tageszeit, Farbe Median-Steigwert. Zeigt sofort, welche
-  Regionen früh bzw. lange aktiv sind.
-- *Long-Term-Trend* (mehrere Saisons): wandert das Q90-Steigen pro
-  Region über die Jahre? Klimasignal oder Pilot-/Geräte-Drift?
-
-=== Wann sinnvoll:
-Frühestens nach einer Saison vollständigen Mitschnitts (siehe 8.2 zur
-nutzbaren Schnittmenge). M5 ist der natürliche Zeitpunkt — Komp. D
-(Kreisflug-Detektion) muss fertig sein, beide Datenquellen (IGC + OGN)
-mindestens 3 Monate gesammelt.
+- *Relativer Benchmark:* Bias/RMSE gegen Soaringmeteo (soarWRF, 2 km) und — wo verfügbar — XC Therm als externe Referenzen. Ziel ist nicht, diese zu schlagen, sondern die eigene Güte einzuordnen und systematische Abweichungen zu verstehen (siehe 13.6).
 
 // =============================================================================
 = 8. Datenverfügbarkeits-Asymmetrie (Querschnittsthema A ↔ E)
@@ -922,38 +893,6 @@ assimiliert und trennt ICONs NWP-Vorhersagefehler sauberer vom eigenen Modellfeh
   entkoppelt.
 ]
 
-=== Trigger-Kriterien: Flächenanteil statt Spatial-Max
-Der Trigger wertet den 09-UTC-Lauf bei Leads 1–6 (10–15 UTC) über die
-Alpen-Bbox aus. Erste Implementierung nahm den *Spatial-Max* je Größe —
-das fiel aber an _jedem_ Sommertag, weil CAPE > 100 J/kg irgendwo in
-270.000 km² praktisch garantiert ist (empirisch 3/3 Tage gefeuert,
-immer über CAPE). Damit war die in 9.1/9.2 gewollte Selektivität weg.
-
-Korrektur: *areale OR-Gate-Logik*. Jeder Zweig fragt „ist das
-großflächig?" über einen Zellen-Schwellwert plus einen Mindest-
-Flächenanteil (max über die Leads):
-
-#tbl(
-  columns: (auto, auto, auto, 1fr),
-  header: ([Zweig], [Zellen-Schwelle], [Min. Fläche], [Bedeutung]),
-  ([CAPE], [CAPE_ML > 500 J/kg], [≥ 10 %], [großflächige Konvektion, nicht Einzelzelle]),
-  ([Strahlung], [ASOB_S > 600 W/m²], [≥ 25 %], [breit sonniger Tag (Blue Day mit wenig CAPE)]),
-  ([Blue-Day], [nass-Anteil < 10 % UND HTOP_DC > 2500 m auf ≥ 20 %], [—], [trocken + großflächige Trockenkonvektion]),
-)
-
-#note[
-  *Warum areal:* Der Spatial-Max ist eine 1-Zellen-Statistik — er
-  unterscheidet einen flächigen Thermiktag nicht von einer isolierten
-  Gewitterzelle in ansonsten stabiler Luft. Der Flächenanteil tut genau
-  das. Spiegelbildlich beim Niederschlag: der frühere `precip_window`
-  als Spatial-Max sprang schon bei einer einzigen Zelle auf 50 mm und
-  machte den Blue-Day-Zweig praktisch unerfüllbar; der *nass-Zellen-
-  Anteil* ist robust. Schwellen sind Startwerte, re-tunbar gegen die
-  IGC/OGN-Überlappung (§6.7, §7.6) sobald eine Saison archiviert ist.
-  Die §9.7-Phase-2-Erweiterungen (Sustained-Peak, Front-Detektion)
-  ergänzen die areale Logik später.
-]
-
 == 9.3 Sofortmaßnahmen (auch ohne Modellcode)
 *Maschine:* HomeServer als Primärsystem. Speicher ist der härtere Constraint (Archiv
 wächst monoton über Jahre, Platten nachrüstbar). Der Bandbreiten-Constraint ist weicher:
@@ -993,8 +932,8 @@ Bandbreiten- oder Speicherthema, kein Nacht/Tag-Split wie bei ICON-Tier-2.
 #note[
   *Rohdaten behalten, NICHT live-aggregieren:* Es ist verlockend, live auszuwerten und
   nur die fertigen Steigwerte zu speichern. Das ist aber eine _irreversible_ Festlegung
-  auf Kreisflug-Parameter, Bin-Größe, Regionsgrenzen (die Stufe 3 erst iterativ
-  verfeinert!) und Höhenreferenz — getroffen, bevor das Modell existiert. Merkt man
+  auf Kreisflug-Parameter, Bin-Größe, Regionsgrenzen (die sich nach dem Review aus 3.1
+  noch ändern können) und Höhenreferenz — getroffen, bevor das Modell existiert. Merkt man
   später einen Bias, lässt sich das auf Rohdaten neu rechnen, auf Aggregaten nicht. Da
   der Speicherbedarf vernachlässigbar ist, wäre Live-Aggregation eine
   Informationsvernichtung ohne echten Gegenwert. Dieselbe Vergänglichkeitslogik wie beim
@@ -1060,39 +999,6 @@ Keep-Alive und Reconnect. Vier Punkte:
   erst in der Auswerteschicht.
 ]
 
-=== Aggregat-Sidecar-Schicht (Phase-2-Speedup, post-M0)
-Das Dashboard scannt aktuell das gzipped Roh-Tagesfile bei jedem
-Cache-Miss — auf einem Vollzeitarbeitsfile (~1 GB komprimiert, ~25 M
-Zeilen) ~20–45 s. Hot-Path-Tuning in v0.5 (pigz + chunked-bytes +
-Regex-direct) hat das halbiert; eine zweite Stufe drückt es unter eine
-Sekunde, ohne die Rohschicht zu verletzen.
-
-*Mechanismus:* Ein eigener Cron-Job ``ogn-aggregate`` läuft alle 5
-Minuten, liest die seit dem letzten Lauf neu hinzugekommenen
-Zeilen (über Datei-Offset, da gzip _append-only_) und führt zwei
-Sidecar-Dateien neben dem Roh-Log fort:
-- ``data/ogn/aggregates/YYYY-MM-DD.hourly.json`` — vorberechnete
-  Aircraft-Count + Paketzahlen pro UTC-Stunde (Plan §10.2 Ebene 3).
-- ``data/ogn/aggregates/YYYY-MM-DD.positions.parquet`` — letzte
-  bekannte Position + Climb-Rate pro Aircraft-ID. Parquet wegen
-  Column-Pruning beim Dashboard-Query (nur eine Spalte je Diagramm).
-
-Dashboard wechselt seine Loader auf die Sidecars; Vollscan nur noch
-beim historischen Backfill nötig (einmalig pro Tag). Trennung
-Rohschicht / Auswerteschicht aus 9.5 explizit bewahrt: Aggregate sind
-_jederzeit_ aus Rohlog reproduzierbar, Aggregator-Bug ist heilbar
-durch Neulauf.
-
-=== Tail-only-Scan für Live-Daten
-Für den Vereinsflug-Tracker (Plan §10.3) interessiert uns nur die
-_letzte_ Position pro Aircraft, nicht der Tagesverlauf. Der Vollscan
-verschwendet 95 % der Zeit auf Daten von vor mehreren Stunden.
-Tail-Strategie: nur die letzten ~100 MB des Tages-Gzip lesen (~15 Min
-Live-Daten bei 160 Paketen/s). Implementierungsdetail: ``pigz -dc``
-nach ``tail -c 100M``-Pipe, dann Roh-Lines ab dem ersten ``\n`` nach
-Pipe-Start. Erwarteter Effekt: Vereinsflug-Seite < 2 s statt 20 s,
-auch ohne Aggregator.
-
 == 9.6 Speicher- und Maschinen-Architektur (Migration zum VPS-Zielzustand)
 Sammlung läuft auf dem HomeServer (9.3); der Zielzustand ist jedoch *alles auf einem
 VPS*. Der Speicherplatz ist dabei der kritische Punkt — nicht alle Datenklassen wachsen
@@ -1119,13 +1025,30 @@ gleich:
 
 *Empfohlener Zielzustand — VPS (klein, fix) + S3-Object-Storage (wachsend, billig):* Der
 VPS hält Produktivbetrieb plus ein rollierendes Arbeitsfenster auf kleiner lokaler Platte.
-Das wachsende Zarr-Archiv liegt in S3-kompatiblem Object Storage (Hetzner Storage Box,
-Backblaze B2, Cloudflare R2, Wasabi) — Größenordnung wenige Euro pro TB/Monat statt
-VPS-Blockspeicher-Preisen. Zarr ist cloud-nativ: chunked, partieller Netzwerkzugriff,
-sodass beim Tuning nur die benötigten Zeitscheiben über das Netz gelesen werden, ohne das
-ganze Archiv lokal zu halten (das Open-Climate-Fix-Archiv liegt aus genau diesem Grund auf
-S3). Aus Code-Sicht ist die Trennung nur ein Pfad-Präfix (`s3://archiv/...` statt
-`/local/...`).
+Das wachsende Zarr-Archiv liegt in S3-kompatiblem Object Storage. Zarr ist cloud-nativ:
+chunked, partieller Netzwerkzugriff, sodass beim Tuning nur die benötigten Zeitscheiben
+über das Netz gelesen werden, ohne das ganze Archiv lokal zu halten (das
+Open-Climate-Fix-Archiv liegt aus genau diesem Grund auf S3). Aus Code-Sicht ist die
+Trennung nur ein Pfad-Präfix (`s3://archiv/...` statt `/local/...`).
+
+*Konkrete Anbieterwahl — Hetzner Object Storage:* S3-kompatibel (seit Ende 2024),
+EU-Rechenzentren (DSGVO unproblematisch), Grundpreis inkl. 1 TB Speicher + 1 TB Egress,
+danach Pay-as-you-go. Entscheidend: *eingehender und Hetzner-interner Traffic ist
+kostenlos* — läuft der VPS später ebenfalls bei Hetzner in derselben Region, kostet der
+Datentransfer VPS $<->$ Archiv (Tuning, operatives Lesen) gar nichts; Egress fällt nur bei
+Zugriff von außerhalb an. Das HomeServer-Schreiben (Sammlung) ist Ingress, also ebenfalls
+frei.
+
+#note[
+  *Storage Box vs. Object Storage — nicht verwechseln:* Die Hetzner *Storage Box* ist ein
+  klassisches Netzlaufwerk (SFTP/SMB/rsync/Borg), *kein* S3. Sie ist auf wenige große
+  Dateien optimiert und für das Zarr-Archiv *ungeeignet*: Zarr besteht aus tausenden
+  kleinen Chunk-Files, was SFTP/SMB zäh macht (ein Roundtrip pro File), und ein Mount
+  bricht die chunked-Streaming-Architektur. Das Zarr-Analyse-Archiv gehört auf *Object
+  Storage*. Eine Storage Box kann optional als billige "Tape-Backup"-Schicht für
+  GRIB2-Rohfiles und IGC-/OGN-Tarballs dienen (wenige große, sequenzielle Dateien) — aber
+  das ist Optimierung, nicht Notwendigkeit.
+]
 
 #note[
   *Migration ohne Datenbruch:* Der HomeServer-Mitschnitt schreibt von Anfang an ins selbe
@@ -1133,30 +1056,60 @@ S3). Aus Code-Sicht ist die Trennung nur ein Pfad-Präfix (`s3://archiv/...` sta
   wechselt. Die Daten waren nie an eine Maschine gebunden.
 ]
 
+=== HDD-Charakteristik und ihre Konsequenz für die Chunk-Größe
+Hetzner Object Storage ist HDD-basiert (Ceph), nicht Flash. Das schlägt fast nur auf die
+*Latenz* (Time-to-First-Byte, einige bis zehner ms pro Zugriff) durch, kaum auf den
+*Durchsatz* (sequenziell konkurrenzfähig, da Ceph über viele Platten parallelisiert und
+ohnehin das Netzwerk limitiert). Relevant ist daher allein, ob der Zugriff *viele kleine
+Roundtrips* oder *wenige große Transfers* macht.
+
+#note[
+  *Kein latenzkritischer Hot-Path aufs Archiv:* Sammlung (Schreiben, Hintergrund) und
+  operatives Lesen (einmal pro Lauf) sind unkritisch. Tuning ist ein Batch-Job (Minuten
+  bis Stunden) — Latenz fällt kaum ins Gewicht. Das Dashboard liest aus der schlanken
+  Heartbeat-Schicht (lokale SQLite/JSON), nicht aus dem Zarr. Es gibt also nirgends
+  interaktives Random-Access, wo HDD-Latenz spürbar würde.
+]
+
+*Konsequenz — Chunk-Größe bewusst wählen:* Der HDD-Latenznachteil wird durch das
+Datenlayout verstärkt oder neutralisiert. Faustregel: *entlang der Achse chunken, die beim
+Lesen am häufigsten am Stück gebraucht wird* — bei diesem Projekt Zeit pro Region (ein
+Tuning-Lauf iteriert über viele Tage einer Region). Wenige große Chunks $->$ hundertfach
+weniger S3-Requests, Latenz fällt nur einmal pro Block an. Feine Mini-Chunks (jeder
+Zeitschritt × Region einzeln) wären das Gegenteil und träfen die HDD-Latenz voll. Diese
+Wahl ist ohnehin fürs Tuning-Zugriffsmuster zu treffen, unabhängig von HDD/Flash.
+
+*Fallback bei Durchsatz-Engpass:* Falls das Tuning doch zu langsam wird, ohne Storage-
+Wechsel lösbar — die relevante Saison einmal in den lokalen (Flash-)VPS-Cache ziehen und
+lokal arbeiten. Das ist genau das rollierende Arbeitsfenster, das der VPS ohnehin vorhält.
+Ein Flash-Anbieter (z.B. Cloudflare R2, NVMe, ohne Egress-Kosten) wäre technisch
+überlegen, aber man zahlte für Performance, die der Batch-Zugriff nie spürt, und verlöre
+Hetzners kostenlosen In-Region-Traffic zum VPS.
+
+=== Bucket-Konfiguration: Sichtbarkeit und Object Lock
+*Sichtbarkeit: privat* (beide Buckets). Zugriff läuft ausschließlich über die
+S3-Credentials von Sammel-Job und Auswerte-Code. Öffentlich read-only hätte keinen Nutzen,
+würde Egress-Kosten verursachen und — bei OGN-Rohdaten — die Privacy-Regeln aus 6.6
+(no-track-Flags, Device-IDs) verletzen. Geteilt würde, wenn überhaupt, nur ein separater,
+bewusst kuratierter Datensatz-Bucket.
+
+*Object Lock — getrennt nach Datenklasse, entlang der Roh-vs-abgeleitet-Logik:*
+- *`…/raw/` MIT Object Lock:* GRIB2-Rohfiles, OGN-Tagesrohlogs, IGC-Files. Alle sind _append-only auf Dateiebene_ (eine neue, abgeschlossene Datei pro Lauf/Tag, bestehende werden nie geändert) — ideal für WORM. Schützt die unwiederbringliche, flüchtige Rohschicht gegen versehentliches Löschen und fehlerhafte Aufräum-Skripte.
+- *`…/zarr/` OHNE Object Lock:* Das abgeleitete Analyse-Archiv wächst täglich; Zarr überschreibt dabei Metadaten-Files (`.zarray`, `.zmetadata`) und Rand-Chunks. Ein Lock würde das tägliche Anhängen _blockieren_. Schutz ist hier auch unnötig: Das Zarr ist aus der (gesperrten) Rohschicht jederzeit reproduzierbar — seine Sicherheit liegt in der Reproduzierbarkeit, nicht im Lock.
+
+#note[
+  *Lock-Modus und Timing:* Falls wählbar, *Governance-Modus* statt Compliance —
+  Compliance ist absolut unwiderruflich (sperrt auch einen selbst bis Fristablauf aus),
+  Governance schützt gegen Alltags-Fehler, erlaubt aber Eingriffe mit Admin-Rechten.
+  Wichtig: Object Lock ist bei S3 meist *nur bei Bucket-Erstellung* aktivierbar, nicht
+  nachrüstbar — den raw-Bucket also gleich mit aktiviertem Lock anlegen (die Retention
+  muss nicht maximal sein). Dies ist die technische Durchsetzung der durchgängigen
+  Roh-unveränderlich-/Auswerte-reproduzierbar-Philosophie aus Kap. 9.
+]
+
 *Ergänzende Stellschrauben, falls das Tier-2-Volumen dennoch zu groß wird:*
 - *Eindampfen:* Nach der ersten Tuning-Phase ist bekannt, welche Modelllevel/Variablen das Modell nutzt — Tier 2 darauf reduzieren (Nachteil: verliert die Flexibilität für später unbedacht benötigte Variablen).
 - *Retention-Politik:* Letzte 2–3 Saisons im schnellen Zugriff, ältere Jahre als Kaltarchiv oder verwerfen. Ein Tuning auf 1–2 Saisons braucht kein Jahrzehnt-Vollarchiv.
-- *OGN-aktivitätsbasierte Retention (post-hoc):* Der Tier-2-Trigger
-  läuft um 12 UTC und hat zu dem Zeitpunkt nur ICON-Diagnostiken, kein
-  Wissen über tatsächliche Flugaktivität. _Nach_ dem Tag wissen wir
-  aus dem OGN-Log, wie viele Aircraft tatsächlich konvektiv aktiv
-  waren — Gewittertage mit hoher CAPE aber Null OGN-Flügen in der
-  Alpen-Bbox sind im Nachhinein klassifizierbar als Schlecht-Wetter-
-  Trigger-Fehler und bevorzugt zur Ausdünnung geeignet.
-
-  Konkret: pro fired Tier-2-Decision wird _am Folgetag_ aus den
-  Aggregaten (9.5.x) ein ``ogn_activity_score`` berechnet (Anzahl
-  distinct Aircraft in der Bbox zwischen 09–16 UTC). Tier-2-Datensätze
-  mit Score < N (z.B. < 200 distinct Aircraft, was einem deutlichen
-  Schlechtwettertag entspricht) werden als _Kaltarchiv-Kandidaten_
-  markiert. Nach 2 Jahren werden niedrig-Score-Tage gelöscht oder
-  nach S3-Glacier verschoben.
-
-  *Caveat:* Schlechtwetter-Tier-2-Profile sind nicht wertlos — sie
-  helfen, das Modell auch in marginalen Situationen zu testen. Daher
-  _bevorzugte_ statt _automatische_ Ausdünnung. Die Information
-  bleibt im Manifest erhalten ("dieser Tag wurde getriggert, aber
-  niedrige OGN-Aktivität"), nur das GRIB-Volumen geht.
 
 == 9.7 15-Min-Sub-Step-Auswertung (Phase 2 — post-M0)
 DWD publiziert vier konvektions-relevante Variablen mit 15-Min-Auflösung
@@ -1238,16 +1191,7 @@ eigenen Zustand. Es liest, was die Sammel-Jobs ohnehin produzieren, und stellt e
 Datenverlust. Pro Job ein Heartbeat:
 - *ICON Tier-1:* Lief der letzte erwartete Lauf-Download? Zeitpunkt des letzten Erfolgs? Dateigröße plausibel (nicht 0 Bytes durch Teilausfall)?
 - *ICON Tier-2:* Wurde an Trigger-Tagen tatsächlich nachgeladen?
-- *OGN-Stream (eingehend):* Kommen _gerade_ Daten an (Meldungsrate > 0, nicht nur "Prozess läuft" — der DNS-Ausfall-Fall)? Wann kam die letzte Meldung?
-- *OGN-Empfänger Flugplatz (Heimstation):* Sendet die _eigene_ Bodenstation
-  noch Status-Beacons? OGN-Receiver senden periodisch eigene
-  Receiver-Beacons (``...> APRS,TCPIP*,qAC,GLIDERN3:>...``) mit
-  Uhrzeit, gehörtem Aircraft-Count und Empfangs-CPU-Last. Wenn die
-  eigene Station mehrere Minuten keinen Beacon sendet, ist sie
-  selbst aus (Strom/Internet/Antenne defekt) — _bevor_ man das im
-  Datenausfall am Boden bemerkt. Eigener Heartbeat-Eintrag
-  ``ogn-receiver-home`` mit Filter auf die eigene Call-Sign aus der
-  OGN-DB; Threshold 10 min (Beacons kommen typisch alle 5 min).
+- *OGN-Stream:* Kommen _gerade_ Daten an (Meldungsrate > 0, nicht nur "Prozess läuft" — der DNS-Ausfall-Fall)? Wann kam die letzte Meldung?
 
 #note[
   *Erwartungslogik ist der Kern:* Das Dashboard muss wissen, was _hätte_ passieren sollen,
@@ -1283,32 +1227,6 @@ Nutzen:
   Wahrheit ihr kennt.
 ]
 
-=== Reichweiten-Analyse pro Vereinsflugzeug
-Jede APRS-Beacon trägt den empfangenden Receiver in der ``qAS,<receiver>``-
-Pfadangabe. Damit lässt sich pro Aircraft eine _Empfangs-Wolke_
-zeichnen: für jeden Beacon den Vektor (Aircraft-Position, Receiver-
-Position aus OGN-DB) als Empfangs-Strahl darstellen.
-
-Drei eigenständige Auswertungen aus derselben Datenbasis:
-- *Sicht aus Aircraft-Perspektive:* Wo (Lat/Lon/Höhe) wird die Maschine
-  noch empfangen? Polare als Karte / Tortendiagramm. Heatmap der
-  Empfangs-Punkte zeigt sofort Funkschatten-Linien (z.B. „hinter dem
-  Hauptkamm kein Empfang").
-- *Sicht aus Receiver-Perspektive (umgekehrt):* welche Aircraft hat ein
-  _bestimmter_ Empfänger gehört? Bei der eigenen Station ergibt das
-  die _eigene_ Empfangs-Sichtbarkeitsglocke — Antenneneffizienz,
-  blockierende Hindernisse, Höhenabdeckung. Direkt actionable: wenn
-  Lücken auf einer Himmelsrichtung systematisch sind, neuer
-  Antennenstandort prüfen.
-- *Coverage-Lücke pro Region:* In welcher ALPTHERM-Region hat _kein_
-  Empfänger Aircraft gehört, obwohl WeGlide Flüge dort verzeichnet
-  (siehe 6.7)? Diese Regionen sind systematisch im OGN-Sample
-  unterrepräsentiert — wichtige Information für die Tuning-Sample-
-  Gewichtung in 8.2.
-
-Die ersten beiden landen als Toggle auf der Vereinsflug-Seite, die
-dritte als Heatmap-Overlay auf der Bestand-Seite (Ebene 2).
-
 == 10.4 Technische Umsetzung
 Poliertes eigenes Frontend (kein Grafana). Empfohlen: schlankes Python-Backend (FastAPI)
 liefert Status-Endpunkte aus der Heartbeat-Schicht; Frontend als moderne SPA (z.B. React)
@@ -1335,7 +1253,7 @@ Vereinskarte), da sie direkt auf den Python-Auswerte-Code zugreifen.
   columns: (auto, 1fr, auto, 1fr),
   header: ([Phase], [Inhalt], [Dauer], [Meilenstein]),
   ([M0], [Archiv-Cronjobs (Kap. 9) — SOFORT], [1–2 Tage], [Tägl. ICON-Mitschnitt (00/03/06/09) + OGN-Stream-Mitschnitt + Tier-2-Trigger läuft]),
-  ([M1], [Region & AHD (Komp. A)], [2 Wo.], [AHD-Profile für 20 Regionen]),
+  ([M1], [Region & AHD (Komp. A)], [2 Wo.], [SOIUSA/AVE-Gruppen aus HydroBASINS realisiert, AHD-Profile je Gruppe]),
   ([M2], [ICON-Pipeline (Komp. B)], [3 Wo.], [Eine Region, eine Saison im Speicher]),
   ([M3], [Modellkern v0 (Komp. C)], [5 Wo.], [Reproduktion Liechti-Figs 3+4]),
   ([M4], [IGC-Pipeline (Komp. D)], [4 Wo.], [Validierungsdatensatz Saison 2025]),
@@ -1363,7 +1281,7 @@ OGN-Live-Stream unwiederbringlich verloren (siehe Kap. 9).
   ([IGC-Selektion: Piloten fliegen beste Bärte, nicht Mittel], [Modell-Output als Q90 reporten; ggf. explizite Bart-Statistik]),
   ([WeGlide-API: Firewall blockt Server-IPs; ToS], [API-Key proaktiv anfragen; aggressives Caching, höfliches Crawling; OLC als Fallback]),
   ([HTOP_DC-Qualität für Blue Days nicht validiert], [Initial-Check an klaren Strahlungstagen im Inntal]),
-  ([Talwind-/Konvergenzeffekte in Phase 1 nicht erfasst], [Regtherm-Kopplung als Phase-2-Erweiterung dokumentiert (5.6); ICON-W und Windvarianz als Datengrundlage]),
+  ([Talwind-/Konvergenzeffekte in Phase 1 nicht erfasst], [Regtherm-Kopplung als Phase-2-Erweiterung dokumentiert (5.5); ICON-W und Windvarianz als Datengrundlage]),
   ([Regionsschnitte ad hoc], [Iteration: grob starten, bei systematischen Biases verfeinern]),
 )
 
@@ -1375,7 +1293,7 @@ OGN-Live-Stream unwiederbringlich verloren (siehe Kap. 9).
 Python 3.11+, Stack vollständig open source:
 - *Numerik:* numpy, scipy, xarray
 - *Geodaten:* geopandas, rasterio, shapely, pyproj
-- *Regionalisierung:* PySAL/spopt (max_p_regions, skater), HydroBASINS/EU-Hydro, Alpenkonvention-Perimeter als Maske
+- *Regionsdefinition:* SOIUSA-/AVE-Gruppen-Geodaten (OSM via Overpass-API, fertige Shapefiles/GeoJSON) als orografische Sollstruktur in den Alpen; HydroBASINS für Geometrie + Konnektivität in den Mittelgebirgen/Flachland und für die Konnektivität (Entwässerungsgraph) überall; HydroBASINS-Union des Zielraums als äußerer Domänenrand; PySAL/spopt optional für die Streuungs-Qualitätskontrolle
 - *NWP:* cfgrib (eccodes-Backend), herbie (DWD-Loader)
 - *IGC / Live:* aerofiles oder eigener Parser; WeGlide-Python-Client (PyPI); python-ogn-client für den OGN-APRS-Stream
 - *Optimierung:* scikit-optimize, optuna
@@ -1392,8 +1310,13 @@ Python 3.11+, Stack vollständig open source:
 - Whiteman, C.D. (2000): Mountain Meteorology — Fundamentals and Applications. Oxford University Press.
 - Zardi, D. & Whiteman, C.D. (2013): Diurnal Mountain Wind Systems. In: Mountain Weather Research and Forecasting, Springer, 35–119.
 - Lehner, B. & Grill, G. (2013): Global river hydrography and network routing — HydroSHEDS / HydroBASINS. Hydrol. Process. 27, 2171–2186.
+- Graßler, F. (1984): Alpenvereinseinteilung der Ostalpen (AVE), 75 Gebirgsgruppen. Alpenvereinsjahrbuch Berg '84.
+- Marazzi, S. (2005): Atlante Orografico delle Alpi (SOIUSA) — Suddivisione Orografica Internazionale Unificata del Sistema Alpino. Priuli & Verlucca.
 - Duque, J.C. et al. (2012): The max-p-regions problem. J. Regional Science 52, 397–419.
 - DWD ICON Database Reference, Numerical Weather Prediction (opendata.dwd.de).
+- Soaringmeteo (Oberson, J.; CSM): Open-Source-Thermikprognose soarWRF/soarGFS, soaringmeteo.org sowie github.com/soaringmeteo/soaringmeteo (GPL-3.0).
+- Chu, Y. et al. (2025/2026): Machine Learning Model for Inverting Convective Boundary Layer Height with Implicit Physical Constraints. ACP / EGUsphere preprint, doi:10.5194/egusphere-2025-2490.
+- XC Therm / Regtherm (Liechti, O.): Modellbeschreibung, xctherm.com/en/regtherm (Input: ICON-EU + ICON-D2).
 
 == 13.3 Verzeichnisstruktur (Vorschlag)
 #formula[
@@ -1441,3 +1364,49 @@ Referenzdaten, überschaubarer Scope, sofort testbare Geometrie. Parallel den
 ICON-Variablenkatalog (Komp. B) implementieren, zunächst für genau diesen Punkt — und vor
 allem den M0-Archiv-Cronjob (Kap. 9) sofort starten. Erst nach erfolgreichem
 End-to-End-Test auf den ganzen Alpenraum skalieren.
+
+== 13.6 Verwandte Arbeiten und Verbesserungspfade
+=== Soaringmeteo als Benchmark und konzeptionelle Referenz
+Soaringmeteo (soaringmeteo.org) ist der direkteste vergleichbare, quelloffene Ansatz:
+Thermikprognosen für die Alpen, u.a. auf 2-km-Gitter, seit Jahren operationell. Im Juni
+2025 wurde die 6-km-Domäne explizit auf Süddeutschland, Massif Central und Italien
+erweitert — also fast deckungsgleich mit dem hier erweiterten Zielgebiet. Zwei Rollen für
+dieses Projekt:
+- *Als Benchmark:* Wogegen sich der eigene Forecast messen lässt. Soaringmeteo rechnet Steigwerte, Wolkenbasis und CBL — dieselben Zielgrößen.
+- *Als konzeptionelle Referenz:* die Steigwert- und CBL-Ableitung aus NWP-Feldern.
+
+#note[
+  *Abgrenzung — das eigene Alleinstellungsmerkmal:* Soaringmeteo rechnet ein _eigenes_
+  WRF-Modell (eigene NWP auf eigenen Servern). Dieses Projekt setzt bewusst auf fertigem
+  ICON auf (reiner Postprozessor) und validiert systematisch gegen echte Flugdaten
+  (IGC + OGN) — Letzteres macht Soaringmeteo nicht systematisch. Das ist der eigene
+  Beitrag: nicht noch ein NWP-Lauf, sondern ICON-Postprocessing mit datengetriebener
+  Kalibrierung.
+]
+
+#note[
+  *Code-Nachnutzung — eingeschränkt, Konzepte ja, Code praktisch nein:* Das
+  Soaringmeteo-Backend ist in *Scala* geschrieben (Frontend TypeScript), der hiesige Stack
+  ist durchgängig Python — direkte Übernahme also nicht möglich, nur konzeptionelle
+  Nachimplementierung. Zudem steht das Repo unter *GPL-3.0-or-later* (starkes Copyleft):
+  Abgeleiteter Code würde das eigene Projekt unter GPL-3.0 zwingen. _Algorithmen und
+  Formeln_ (Steigwert aus CBL-Profil, Wolkenbasis-Bestimmung, GRIB-Extraktion im
+  `common`-Modul) dürfen als Idee nachvollzogen werden; _Code_ sollte nicht kopiert
+  werden. Fazit: als Ideengeber und Benchmark wertvoll, als Code-Quelle kaum nutzbar.
+]
+
+=== Physik-gestütztes ML als optionaler späterer Vergleichspfad
+Aktuelle Forschung (ACP / EGUsphere 2025–2026) zu _thermodynamik-gestütztem ML_ für die
+CBL-Höhe nutzt Oberflächenwärmeströme und Stabilität als physikalisch eingebettete Treiber
+(implizite Constraints statt rein empirischer Feature-Wahl), erreicht R²≈0,84 über
+untrainierte Jahre und stützt sich auf fertige AutoML-Werkzeuge (TPOT, AutoKeras). Das
+adressiert genau die hiesige Zielgröße (CBL-Höhe aus Wärmeströmen).
+
+#note[
+  *Nicht Kernansatz, sondern Ausblick:* Das physikbasierte Liechti-Modell ist erklärbarer
+  und braucht keine großen Trainingsdatensätze — es bleibt der Kern. Sobald aber genug
+  validierte Flugdaten gesammelt sind (Kap. 9), bietet sich an, ein physik-constrainetes
+  ML-Modell als _Vergleichs-Baseline_ oder _Hybrid_ gegen das Liechti-Modell antreten zu
+  lassen: Wo schlägt datengetriebenes Lernen die Physik, wo nicht? Das ist ein
+  nachgelagerter Forschungsschritt, kein Teil der ersten Implementierung.
+]

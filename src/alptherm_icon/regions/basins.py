@@ -1,10 +1,7 @@
-"""HydroBASINS-driven region refinement for Komp. A (plan §3.1 Stufe 2).
+"""HydroBASINS utilities for Komp. A (plan §3.1).
 
-Fetches the HydroBASINS (HydroSHEDS) standard product from the public CDN,
-selects basins majority-inside a seed bbox, and applies a manual
-"hauptkamm" split — for the Inntal pilot, keep only basins draining
-from the north side of the Inn river. The Inn line is encoded as a
-linear approximation between Innsbruck and Kufstein.
+Fetches the HydroBASINS (HydroSHEDS) standard product from the public CDN
+and provides helpers for basin selection and domain-boundary construction.
 """
 
 from __future__ import annotations
@@ -18,19 +15,11 @@ import requests
 from shapely.geometry.base import BaseGeometry
 
 HYDROBASINS_URLS: dict[tuple[str, int], str] = {
+    ("eu", 7): "https://data.hydrosheds.org/file/hydrobasins/standard/hybas_eu_lev07_v1c.zip",
     ("eu", 8): "https://data.hydrosheds.org/file/hydrobasins/standard/hybas_eu_lev08_v1c.zip",
     ("eu", 9): "https://data.hydrosheds.org/file/hydrobasins/standard/hybas_eu_lev09_v1c.zip",
     ("eu", 10): "https://data.hydrosheds.org/file/hydrobasins/standard/hybas_eu_lev10_v1c.zip",
 }
-
-INN_LINE = (42.8134, 0.3891)
-"""Linear approximation of the Lower Inn river: lat = a + b * lon.
-
-Least-squares fit through Innsbruck (11.394, 47.265), Schwaz
-(11.708, 47.343), Wörgl (12.077, 47.485), Kufstein (12.171, 47.583).
-Max residual ~0.035° latitude (~4 km) — well below Level 8 basin size
-(~25 km diameter), so adequate for ridge-side classification.
-"""
 
 
 def fetch_hydrobasins(
@@ -87,28 +76,18 @@ def basins_inside_bbox(
     return candidates[candidates["overlap_frac"] >= min_overlap_frac].copy()
 
 
-def filter_north_of_inn(
+def union_basins_for_domain(
     basins: gpd.GeoDataFrame,
-    line_params: tuple[float, float] = INN_LINE,
-) -> gpd.GeoDataFrame:
-    """Keep basins whose centroid lies north of `lat = a + b * lon`."""
-    a, b = line_params
-    # representative_point() avoids the geographic-CRS centroid warning and
-    # is guaranteed to lie inside the basin — for north/south-of-line
-    # classification either an interior point or the centroid works.
-    points = basins.geometry.representative_point()
-    return basins[points.y > a + b * points.x].copy()
-
-
-def select_basins(
-    basins: gpd.GeoDataFrame,
-    seed_geom: BaseGeometry,
+    bbox_geom: BaseGeometry,
     min_overlap_frac: float = 0.5,
-    apply_hauptkamm: bool = True,
-    line_params: tuple[float, float] = INN_LINE,
-) -> gpd.GeoDataFrame:
-    """End-to-end basin selection: bbox overlap + optional hauptkamm filter."""
-    inside = basins_inside_bbox(basins, seed_geom, min_overlap_frac=min_overlap_frac)
-    if not apply_hauptkamm:
-        return inside
-    return filter_north_of_inn(inside, line_params=line_params)
+) -> BaseGeometry:
+    """Union of all basins majority-inside ``bbox_geom`` — the outer model domain.
+
+    The result follows real watershed boundaries (Donau in the north,
+    Rhine/Donau Hauptwasserscheide in the west) rather than any
+    administrative perimeter (plan §3.1).
+    """
+    inside = basins_inside_bbox(basins, bbox_geom, min_overlap_frac=min_overlap_frac)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Geometry is in a geographic CRS")
+        return inside.geometry.union_all()

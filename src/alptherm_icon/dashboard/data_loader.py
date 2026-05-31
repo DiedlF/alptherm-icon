@@ -289,6 +289,95 @@ def _greedy_region_colors(gdf) -> list[int]:
     return color_idx
 
 
+def load_regions_v2(
+    root: Path,
+    simplify_deg: float = 0.003,
+    with_colors: bool = True,
+):  # -> geopandas.GeoDataFrame | None
+    """Load v2 SOIUSA-based regions. Prefers the annotated (post-AHD) file,
+    falls back to the unannotated build output. Returns None if neither exists.
+    """
+    import geopandas as gpd
+
+    for candidate in (
+        root / "data" / "regions" / "alpine_v2_regions_annotated.geojson",
+        root / "data" / "regions" / "alpine_v2_regions.geojson",
+    ):
+        if candidate.exists():
+            gdf = gpd.read_file(candidate)
+            if simplify_deg > 0:
+                gdf = _safe_simplify(gdf, simplify_deg)
+            if with_colors:
+                gdf["color_idx"] = _greedy_region_colors(gdf)
+            return gdf
+    return None
+
+
+def load_hydrobasins_for_display(
+    root: Path,
+    level: int = 8,
+    simplify_deg: float = 0.004,
+):  # -> geopandas.GeoDataFrame | None
+    """Load HydroBASINS L{level} clipped to the model domain for map display.
+
+    Reads the shapefile from ``data/basins/`` (downloaded by
+    ``python -m alptherm_icon.regions alpine-v2`` or ``fetch_hydrobasins``).
+    Returns None if the shapefile hasn't been fetched yet.
+    """
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    from alptherm_icon.regions.alpine_v0 import MODEL_BBOX
+
+    shp = root / "data" / "basins" / f"hybas_eu_lev{level:02d}_v1c.shp"
+    if not shp.exists():
+        return None
+    gdf = gpd.read_file(shp)
+    bbox_geom = box(*MODEL_BBOX)
+    with __import__("warnings").catch_warnings():
+        __import__("warnings").filterwarnings("ignore", message="Geometry is in a geographic CRS")
+        candidates = gdf[gdf.intersects(bbox_geom)].copy()
+        overlap = candidates.geometry.intersection(bbox_geom).area / candidates.geometry.area
+        candidates["overlap_frac"] = overlap.values
+        gdf = candidates[candidates["overlap_frac"] >= 0.3].copy()
+    if "SUB_AREA" in gdf.columns:
+        gdf = gdf.rename(columns={"SUB_AREA": "area_km2"})
+    if simplify_deg > 0:
+        gdf = _safe_simplify(gdf, simplify_deg)
+    return gdf.reset_index(drop=True)
+
+
+def load_soiusa_groups(
+    root: Path,
+    simplify_deg: float = 0.004,
+):  # -> geopandas.GeoDataFrame | None
+    """Load the SOIUSA source group polygons (plan §3.1 Stufe 1).
+
+    These are the orographic *should-be* structure from OSM / local file,
+    distinct from the HydroBASINS-realised regions in load_regions_v2.
+    Returns None if soiusa_groups.geojson hasn't been built yet.
+    """
+    import geopandas as gpd
+
+    path = root / "data" / "regions" / "soiusa_groups.geojson"
+    if not path.exists():
+        return None
+    gdf = gpd.read_file(path)
+    if simplify_deg > 0:
+        gdf = _safe_simplify(gdf, simplify_deg)
+    return gdf
+
+
+def load_domain_boundary(root: Path):  # -> dict | None
+    """Load the outer model domain boundary GeoJSON dict, or None."""
+    import json
+
+    path = root / "data" / "regions" / "domain_boundary.geojson"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
 def load_regions(
     root: Path,
     simplify_deg: float = 0.003,

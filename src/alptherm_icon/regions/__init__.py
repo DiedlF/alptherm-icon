@@ -13,29 +13,46 @@ from alptherm_icon.regions.alpine_v0 import (
     summarise,
     write_geojson,
 )
+from alptherm_icon.regions.alpine_v0 import MODEL_BBOX, build_domain_boundary, classify_terrain_type
 from alptherm_icon.regions.basins import (
     basins_inside_bbox,
     fetch_hydrobasins,
-    filter_north_of_inn,
-    select_basins,
+    union_basins_for_domain,
 )
 from alptherm_icon.regions.dem import TileId, build_region_dem, tiles_for_geom
+from alptherm_icon.regions.edges import compute_edge_thresholds, find_neighbors
 from alptherm_icon.regions.polygon import load_region
+from alptherm_icon.regions.soiusa import (
+    assign_basins_to_groups,
+    fetch_osm_mountain_ranges,
+    load_groups_from_file,
+    realize_groups,
+    soiusa_union,
+)
 
 __all__ = [
     "AHDProfile",
     "ALPEN_BBOX",
+    "MODEL_BBOX",
     "AlpineBasinSummary",
     "TileId",
+    "assign_basins_to_groups",
     "basins_inside_bbox",
+    "build_domain_boundary",
     "build_region_dem",
+    "classify_terrain_type",
     "compute_ahd",
+    "compute_edge_thresholds",
     "fetch_hydrobasins",
-    "filter_north_of_inn",
+    "fetch_osm_mountain_ranges",
+    "find_neighbors",
     "load_alpine_basins",
+    "load_groups_from_file",
     "load_region",
-    "select_basins",
+    "realize_groups",
+    "soiusa_union",
     "summarise",
     "tiles_for_geom",
+    "union_basins_for_domain",
     "write_geojson",
 ]

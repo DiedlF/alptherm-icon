@@ -206,7 +206,8 @@ def build_alpine_mosaic(
 
 @dataclass
 class RegionAHDResult:
-    hybas_id: int
+    region_id: str         # canonical string ID (equals str(hybas_id) for HydroBASINS)
+    hybas_id: int          # 0 when region_id is not a numeric HydroBASINS ID
     region_name: str
     mean_elev_m: float
     n_pixels: int
@@ -218,6 +219,7 @@ def compute_ahd_batch(
     mosaic_path: Path,
     out_dir: Path,
     overwrite: bool = False,
+    region_id_col: str = "HYBAS_ID",
 ) -> list[RegionAHDResult]:
     """Compute AHD for every basin in ``basins`` against the shared mosaic.
 
@@ -241,16 +243,18 @@ def compute_ahd_batch(
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Geometry is in a geographic CRS")
             for i, row in basins.reset_index(drop=True).iterrows():
-                hid = int(row["HYBAS_ID"])
-                name = f"region_{hid}"
+                rid_raw = row[region_id_col]
+                rid_str = str(rid_raw)
+                hid = int(rid_raw) if region_id_col == "HYBAS_ID" else 0
+                name = f"region_{rid_str}"
                 out = out_dir / f"{name}_ahd.nc"
                 if out.exists() and not overwrite:
-                    # Re-read just the attrs we need (cheap)
                     import xarray as _xr
 
                     with _xr.open_dataset(out) as ds:
                         results.append(
                             RegionAHDResult(
+                                region_id=rid_str,
                                 hybas_id=hid,
                                 region_name=name,
                                 mean_elev_m=float(ds.attrs.get("mean_elev_m", float("nan"))),
@@ -324,6 +328,7 @@ def compute_ahd_batch(
 
                 results.append(
                     RegionAHDResult(
+                        region_id=rid_str,
                         hybas_id=hid,
                         region_name=name,
                         mean_elev_m=mean_elev,
@@ -351,3 +356,42 @@ def annotate_basins(
         for e in basins["mean_elev_m"].fillna(0.0)
     ]
     return basins
+
+
+def annotate_regions(
+    regions: gpd.GeoDataFrame,
+    results: list[RegionAHDResult],
+    id_col: str = "region_id",
+    mittelgebirge_min_relief_m: float = 400.0,
+) -> gpd.GeoDataFrame:
+    """Fold AHD results back into a v2 regions GeoDataFrame.
+
+    Adds mean_elev_m and elev_range_m columns. Refines terrain_type
+    for 'non_alpine' rows: once elev_range_m is known, classifies as
+    'mittelgebirge' or 'flachland'.
+    """
+    by_id = {r.region_id: r for r in results}
+    regions = regions.copy()
+    regions["mean_elev_m"] = [
+        by_id[str(rid)].mean_elev_m if str(rid) in by_id else float("nan")
+        for rid in regions[id_col]
+    ]
+    regions["elev_range_m"] = [
+        float(
+            by_id[str(rid)].profile.z_top_m[-1]
+            - by_id[str(rid)].profile.z_bottom_m[0]
+        )
+        if str(rid) in by_id and len(by_id[str(rid)].profile.z_bottom_m) > 0
+        else float("nan")
+        for rid in regions[id_col]
+    ]
+    if "terrain_type" in regions.columns:
+        def _refine(row: "pd.Series") -> str:  # type: ignore[name-defined]
+            if row["terrain_type"] != "non_alpine":
+                return row["terrain_type"]
+            r = row.get("elev_range_m", float("nan"))
+            if not np.isfinite(r):
+                return "non_alpine"
+            return "mittelgebirge" if r >= mittelgebirge_min_relief_m else "flachland"
+        regions["terrain_type"] = regions.apply(_refine, axis=1)
+    return regions
