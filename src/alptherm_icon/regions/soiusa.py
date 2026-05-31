@@ -64,7 +64,8 @@ def fetch_osm_mountain_ranges(
         f'relation["natural"="mountain_range"]({bbox_overpass});'
         "out geom;"
     )
-    resp = requests.post(overpass_url, data={"data": query}, timeout=timeout_s + 30)
+    headers = {"User-Agent": "alptherm-icon/1.0 (research; contact: github.com/alptherm-icon)"}
+    resp = requests.post(overpass_url, data={"data": query}, headers=headers, timeout=timeout_s + 30)
     resp.raise_for_status()
     elements = resp.json().get("elements", [])
     log.info("OSM returned %d mountain_range relations", len(elements))
