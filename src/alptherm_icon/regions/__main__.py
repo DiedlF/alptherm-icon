@@ -554,11 +554,34 @@ def cmd_alpine_v2_ahd(args: argparse.Namespace) -> int:
         )
 
     regions = gpd.read_file(geojson_in)
-    print(f"computing AHD for {len(regions)} v2 regions…")
+
+    # Only pass regions that need computation to the batch to keep peak
+    # memory low — large SOIUSA union polygons + DEM masking can OOM if
+    # all 400 geometries are held in memory simultaneously.
+    if not args.force:
+        uncached = regions[
+            regions["region_id"].apply(
+                lambda rid: not (ahd_dir / f"region_{rid}_ahd.nc").exists()
+            )
+        ]
+        n_cached = len(regions) - len(uncached)
+        if n_cached:
+            print(f"skipping {n_cached} already-cached AHD profiles")
+        batch_regions = uncached if not uncached.empty else regions
+    else:
+        batch_regions = regions
+
+    print(f"computing AHD for {len(batch_regions)} v2 regions…")
     results = compute_ahd_batch(
-        regions, mosaic, ahd_dir, overwrite=args.force, region_id_col="region_id"
+        batch_regions, mosaic, ahd_dir, overwrite=args.force, region_id_col="region_id"
     )
-    print(f"AHD profiles: {len(results)} → {ahd_dir.relative_to(root)}")
+    # Load cached results for skipped regions so annotate_regions sees them all.
+    if not args.force and n_cached:
+        cached_results = compute_ahd_batch(
+            regions, mosaic, ahd_dir, overwrite=False, region_id_col="region_id"
+        )
+        results = cached_results
+    print(f"AHD profiles total: {len(results)} → {ahd_dir.relative_to(root)}")
 
     annotated = annotate_regions(regions, results)
     annotated.to_file(geojson_out, driver="GeoJSON")
