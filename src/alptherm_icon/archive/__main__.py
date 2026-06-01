@@ -31,12 +31,13 @@ import sys
 from pathlib import Path
 
 from alptherm_icon import monitoring
-from alptherm_icon.archive import manifest
+from alptherm_icon.archive import manifest, s3
 from alptherm_icon.archive.archiver import (
     ArchiveRoot,
     archive_tier1,
     decide_tier2,
     download_pending_tier2,
+    migrate_to_s3,
 )
 
 ICON_D2_ANCHOR_HOURS: tuple[int, ...] = (0, 3, 6, 9)
@@ -246,6 +247,54 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_s3_check(args: argparse.Namespace) -> int:
+    """Verify the S3 config resolves and both buckets are reachable."""
+    root = _project_root()
+    cfg = s3.load_s3_config(root)
+    if cfg is None:
+        print("S3 not configured (data/archive.env missing keys) — local-only mode.")
+        return 1
+    print(f"endpoint: {cfg.endpoint_url}  region={cfg.region or '—'}")
+    print(f"buckets:  raw={cfg.raw_bucket}  zarr={cfg.zarr_bucket}")
+    print(f"raw retention: {cfg.raw_retention_days} d (GOVERNANCE)")
+    s3_client = s3.client(cfg)
+    rc = 0
+    for label, bucket, want_lock in (
+        ("raw", cfg.raw_bucket, True),
+        ("zarr", cfg.zarr_bucket, False),
+    ):
+        try:
+            s3_client.head_bucket(Bucket=bucket)
+            lock = "—"
+            try:
+                lc = s3_client.get_object_lock_configuration(Bucket=bucket)
+                lock = lc.get("ObjectLockConfiguration", {}).get("ObjectLockEnabled", "—")
+            except Exception:  # noqa: BLE001
+                lock = "none"
+            flag = "✓" if (lock == "Enabled") == want_lock else "⚠ unexpected"
+            print(f"  {label:<4s} {bucket}: reachable  object-lock={lock} {flag}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  {label:<4s} {bucket}: ERROR {exc!r}", file=sys.stderr)
+            rc = 2
+    return rc
+
+
+def cmd_migrate_s3(args: argparse.Namespace) -> int:
+    """Push the existing local archive up to S3 (one-time, resumable)."""
+    root = _project_root()
+    stats = migrate_to_s3(
+        root=root,
+        do_raw=not args.zarr_only,
+        do_zarr=not args.raw_only,
+    )
+    print(
+        f"migrate: raw uploaded={stats['raw_uploaded']} "
+        f"skipped={stats['raw_skipped']} failed={stats['raw_failed']}  "
+        f"zarr synced={'yes' if stats['zarr'] else 'no'}"
+    )
+    return 1 if stats["raw_failed"] else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -314,6 +363,20 @@ def main(argv: list[str] | None = None) -> int:
     p_st = sub.add_parser("status", help="summarize the manifest")
     p_st.add_argument("--json", action="store_true")
     p_st.set_defaults(func=cmd_status)
+
+    # s3-check ------------------------------------------------------------
+    p_s3 = sub.add_parser("s3-check", help="verify S3 config + bucket reachability")
+    p_s3.set_defaults(func=cmd_s3_check)
+
+    # migrate-s3 ----------------------------------------------------------
+    p_mig = sub.add_parser(
+        "migrate-s3",
+        help="one-time upload of the existing local archive to S3 (resumable)",
+    )
+    mg = p_mig.add_mutually_exclusive_group()
+    mg.add_argument("--raw-only", action="store_true", help="migrate raw grib only")
+    mg.add_argument("--zarr-only", action="store_true", help="migrate the zarr only")
+    p_mig.set_defaults(func=cmd_migrate_s3)
 
     args = parser.parse_args(argv)
     return args.func(args)

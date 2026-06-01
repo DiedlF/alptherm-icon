@@ -23,6 +23,8 @@ data/ogn/*
 !data/ogn/.gitkeep
 data/watchlist.json
 data/monitoring.env
+data/archive.env
+data/*.log
 
 # Python
 __pycache__/
