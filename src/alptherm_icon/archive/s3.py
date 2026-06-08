@@ -127,16 +127,32 @@ def load_s3_config(root: Path | None = None) -> S3Config | None:
     )
 
 
-def client(cfg: S3Config):
-    """A boto3 S3 client bound to the configured endpoint."""
-    import boto3
+def client(cfg: S3Config, max_pool_connections: int = 16):
+    """A boto3 S3 client bound to the configured endpoint.
 
+    Uses botocore's **adaptive** retry mode with a generous attempt budget so
+    transient ``EndpointConnectionError``s — which Hetzner Object Storage
+    returns when a bulk migration drives too many concurrent PUTs — are retried
+    with client-side rate-limiting/backoff instead of surfacing as permanent
+    failures. ``max_pool_connections`` is sized to cover the migration's worker
+    threads so concurrent PUTs don't starve the connection pool.
+    """
+    import boto3
+    from botocore.config import Config
+
+    cfg_botocore = Config(
+        retries={"max_attempts": 10, "mode": "adaptive"},
+        max_pool_connections=max_pool_connections,
+        connect_timeout=15,
+        read_timeout=60,
+    )
     return boto3.client(
         "s3",
         endpoint_url=cfg.endpoint_url,
         region_name=cfg.region or None,
         aws_access_key_id=cfg.access_key,
         aws_secret_access_key=cfg.secret_key,
+        config=cfg_botocore,
     )
 
 
@@ -172,6 +188,81 @@ def upload_raw(cfg: S3Config, local_path: Path, key: str, s3=None, check_exists=
         return False
     s3.upload_file(str(local_path), cfg.raw_bucket, key)
     return True
+
+
+def upload_zarr_tree(
+    cfg: S3Config,
+    local_zarr: Path,
+    s3=None,
+    workers: int = 6,
+    prune_orphans: bool = True,
+) -> dict[str, int]:
+    """Mirror a local ``tier1.zarr`` directory to the zarr bucket via boto3.
+
+    Used instead of an ``s3fs`` recursive ``put`` because boto3 auto-corrects
+    request clock skew (it reads the server ``Date`` on a ``RequestTimeTooSkewed``
+    response and re-signs), whereas ``s3fs``/``aiobotocore`` aborts the whole
+    transfer on the first skewed chunk — which repeatedly stranded the multi-GB
+    zarr put half-finished on a box with an intermittently jumping clock.
+
+    Every file under ``local_zarr`` is uploaded (overwriting — chunks are
+    mutable, unlike raw) to ``tier1.zarr/<relpath>`` on a thread pool. When
+    ``prune_orphans`` is set, keys present in the bucket but no longer in the
+    local store are deleted afterwards, so repeated/failed runs can't leave
+    stale chunks behind that would corrupt the store.
+
+    Returns a stats dict: ``uploaded``, ``failed``, ``pruned``.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    s3 = s3 or client(cfg, max_pool_connections=max(workers, 10))
+    prefix = ZARR_TIER1_PREFIX
+    local_files = [p for p in local_zarr.rglob("*") if p.is_file()]
+    desired = {f"{prefix}/{p.relative_to(local_zarr).as_posix()}": p for p in local_files}
+    stats = {"uploaded": 0, "failed": 0, "pruned": 0}
+
+    _tls = threading.local()
+
+    def _put(item: tuple[str, Path]) -> None:
+        key, path = item
+        cl = getattr(_tls, "client", None)
+        if cl is None:
+            cl = _tls.client = client(cfg, max_pool_connections=max(workers, 10))
+        cl.upload_file(str(path), cfg.zarr_bucket, key)
+
+    log.info("zarr: uploading %d files → s3://%s/%s", len(desired), cfg.zarr_bucket, prefix)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_put, it): it[0] for it in desired.items()}
+        for fut in as_completed(futures):
+            try:
+                fut.result()
+                stats["uploaded"] += 1
+            except Exception as exc:  # noqa: BLE001
+                stats["failed"] += 1
+                log.warning("zarr: upload failed for %s: %r", futures[fut], exc)
+
+    if prune_orphans and not stats["failed"]:
+        existing = set()
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=cfg.zarr_bucket, Prefix=f"{prefix}/"):
+            for obj in page.get("Contents", []):
+                existing.add(obj["Key"])
+        orphans = sorted(existing - desired.keys())
+        for i in range(0, len(orphans), 1000):
+            batch = orphans[i : i + 1000]
+            s3.delete_objects(
+                Bucket=cfg.zarr_bucket,
+                Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
+            )
+            stats["pruned"] += len(batch)
+        if orphans:
+            log.info("zarr: pruned %d orphan objects", stats["pruned"])
+    elif prune_orphans and stats["failed"]:
+        log.warning("zarr: skipping orphan prune because %d uploads failed", stats["failed"])
+
+    log.info("zarr upload done: %s", stats)
+    return stats
 
 
 def ensure_raw_retention(cfg: S3Config, s3=None) -> None:

@@ -38,6 +38,7 @@ from alptherm_icon.archive.archiver import (
     decide_tier2,
     download_pending_tier2,
     migrate_to_s3,
+    prune_local,
 )
 
 ICON_D2_ANCHOR_HOURS: tuple[int, ...] = (0, 3, 6, 9)
@@ -286,6 +287,7 @@ def cmd_migrate_s3(args: argparse.Namespace) -> int:
         root=root,
         do_raw=not args.zarr_only,
         do_zarr=not args.raw_only,
+        workers=args.workers,
     )
     print(
         f"migrate: raw uploaded={stats['raw_uploaded']} "
@@ -293,6 +295,26 @@ def cmd_migrate_s3(args: argparse.Namespace) -> int:
         f"zarr synced={'yes' if stats['zarr'] else 'no'}"
     )
     return 1 if stats["raw_failed"] else 0
+
+
+def cmd_prune_local(args: argparse.Namespace) -> int:
+    """Trim the local raw cache to the last N days, deleting only S3-confirmed files."""
+    root = _project_root()
+    stats = prune_local(root=root, keep_days=args.keep_days, apply=args.apply)
+    freed_gb = stats["freed_bytes"] / 1e9
+    verb = "freed" if args.apply else "would free"
+    print(
+        f"prune ({'APPLY' if args.apply else 'dry-run'}): "
+        f"scanned={stats['scanned']} kept-recent={stats['kept_recent']} "
+        f"undatable={stats['undatable']} not-in-s3={stats['unconfirmed']} "
+        f"deleted={stats['deleted']}  {verb} {freed_gb:.1f} GB"
+    )
+    if stats["unconfirmed"]:
+        print(
+            f"  note: {stats['unconfirmed']} old files are NOT yet in S3 and were "
+            f"kept — run migrate-s3 first to cover them."
+        )
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -376,7 +398,27 @@ def main(argv: list[str] | None = None) -> int:
     mg = p_mig.add_mutually_exclusive_group()
     mg.add_argument("--raw-only", action="store_true", help="migrate raw grib only")
     mg.add_argument("--zarr-only", action="store_true", help="migrate the zarr only")
+    p_mig.add_argument(
+        "--workers", type=int, default=6,
+        help="parallel upload threads (default: 6; lower this if the endpoint "
+        "drops connections under load)",
+    )
     p_mig.set_defaults(func=cmd_migrate_s3)
+
+    # prune-local ---------------------------------------------------------
+    p_pr = sub.add_parser(
+        "prune-local",
+        help="delete old local raw grib already mirrored to S3 (dry-run by default)",
+    )
+    p_pr.add_argument(
+        "--keep-days", type=int, default=7,
+        help="keep raw grib whose init date is within this many days (default: 7)",
+    )
+    p_pr.add_argument(
+        "--apply", action="store_true",
+        help="actually delete; without this the command only reports what it would free",
+    )
+    p_pr.set_defaults(func=cmd_prune_local)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -628,15 +628,121 @@ def migrate_to_s3(
     if do_zarr:
         local_zarr = paths.zarr_tier1_path
         if local_zarr.exists():
-            import s3fs
-
-            fs = s3fs.S3FileSystem(**cfg.storage_options)
-            dest = f"{cfg.zarr_bucket}/{s3.ZARR_TIER1_PREFIX}"
-            log.info("migrate: syncing %s → s3://%s", local_zarr, dest)
-            fs.put(str(local_zarr), dest, recursive=True)
-            stats["zarr"] = 1
+            # boto3 (not s3fs) so request clock-skew is auto-corrected and a
+            # failed run can't strand orphan chunks — see s3.upload_zarr_tree.
+            zstats = s3.upload_zarr_tree(cfg, local_zarr, workers=workers)
+            stats["zarr"] = 1 if not zstats["failed"] else 0
+            stats["zarr_failed"] = zstats["failed"]
         else:
             log.info("migrate: no local zarr at %s — skipping", local_zarr)
 
     log.info("migrate done: %s", stats)
     return stats
+
+
+def _init_date_from_raw_path(grib_root: Path, p: Path) -> dt.date | None:
+    """Parse the init *date* from a raw grib path ``YYYY/MM/DD/HH/tierN/file``.
+
+    Returns ``None`` if the path doesn't match the expected layout (such a
+    file is treated as un-prunable — we never delete what we can't date).
+    """
+    try:
+        rel = p.resolve().relative_to(grib_root.resolve()).parts
+    except ValueError:
+        return None
+    if len(rel) < 4:
+        return None
+    try:
+        return dt.date(int(rel[0]), int(rel[1]), int(rel[2]))
+    except ValueError:
+        return None
+
+
+def prune_local(
+    root: Path,
+    keep_days: int = 7,
+    apply: bool = False,
+    now: dt.datetime | None = None,
+) -> dict[str, int]:
+    """Reclaim disk by deleting old local raw grib that is safely in S3.
+
+    The local ``data/archive/grib`` tree is only a rolling working cache; S3
+    is the archive of record. This trims it to the last ``keep_days`` of init
+    dates, deleting older files **only after confirming the same key exists in
+    the raw bucket** (one paginated LIST, then a local set-diff — never a blind
+    delete). Files newer than the window, files we can't date, and files not
+    yet confirmed in S3 are all left untouched.
+
+    Dry-run by default: pass ``apply=True`` to actually unlink. The zarr is
+    never pruned (it's a single append-only store, not a rolling cache).
+
+    Returns a stats dict with counts and ``freed_bytes``.
+    """
+    cfg = s3.load_s3_config(root)
+    if cfg is None:
+        raise RuntimeError(
+            "S3 not configured — refusing to prune the local cache without an "
+            "archive of record. Set credentials in data/archive.env."
+        )
+    now = now or dt.datetime.now(dt.timezone.utc)
+    cutoff = now.date() - dt.timedelta(days=keep_days)
+
+    paths = ArchiveRoot(root=root)
+    grib_root = paths.archive_dir / "grib"
+    stats = {
+        "scanned": 0, "kept_recent": 0, "undatable": 0,
+        "unconfirmed": 0, "deleted": 0, "freed_bytes": 0,
+    }
+    if not grib_root.exists():
+        log.info("prune: no local grib tree at %s — nothing to do", grib_root)
+        return stats
+
+    s3_client = s3.client(cfg)
+    log.info("prune: listing raw keys already in s3://%s …", cfg.raw_bucket)
+    existing = _existing_raw_keys(cfg, s3_client)
+    log.info("prune: %d keys in bucket; keep_days=%d cutoff<%s apply=%s",
+             len(existing), keep_days, cutoff.isoformat(), apply)
+
+    local_files = sorted(grib_root.rglob("*.grib2"))
+    for p in local_files:
+        stats["scanned"] += 1
+        init_date = _init_date_from_raw_path(grib_root, p)
+        if init_date is None:
+            stats["undatable"] += 1
+            continue
+        if init_date >= cutoff:
+            stats["kept_recent"] += 1
+            continue
+        if paths.raw_key(p) not in existing:
+            stats["unconfirmed"] += 1
+            log.debug("prune: NOT in s3, keeping %s", paths.raw_key(p))
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        if apply:
+            try:
+                p.unlink()
+            except OSError as exc:  # noqa: BLE001
+                log.warning("prune: failed to delete %s: %r", p, exc)
+                continue
+        stats["deleted"] += 1
+        stats["freed_bytes"] += size
+
+    if apply:
+        _remove_empty_dirs(grib_root)
+    log.info("prune %s done: %s", "APPLY" if apply else "DRY-RUN", stats)
+    return stats
+
+
+def _remove_empty_dirs(top: Path) -> None:
+    """Recursively drop now-empty directories left behind after pruning."""
+    for d in sorted((p for p in top.rglob("*") if p.is_dir()), reverse=True):
+        try:
+            next(d.iterdir())
+        except StopIteration:
+            try:
+                d.rmdir()
+            except OSError:
+                pass
