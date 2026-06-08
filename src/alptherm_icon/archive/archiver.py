@@ -660,7 +660,7 @@ def _init_date_from_raw_path(grib_root: Path, p: Path) -> dt.date | None:
 
 def prune_local(
     root: Path,
-    keep_days: int = 7,
+    keep_days: int = 4,
     apply: bool = False,
     now: dt.datetime | None = None,
 ) -> dict[str, int]:

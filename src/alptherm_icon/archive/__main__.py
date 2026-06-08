@@ -411,8 +411,8 @@ def main(argv: list[str] | None = None) -> int:
         help="delete old local raw grib already mirrored to S3 (dry-run by default)",
     )
     p_pr.add_argument(
-        "--keep-days", type=int, default=7,
-        help="keep raw grib whose init date is within this many days (default: 7)",
+        "--keep-days", type=int, default=4,
+        help="keep raw grib whose init date is within this many days (default: 4)",
     )
     p_pr.add_argument(
         "--apply", action="store_true",
