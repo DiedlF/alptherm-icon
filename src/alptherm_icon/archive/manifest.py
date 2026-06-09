@@ -3,8 +3,10 @@
 One record per (init, tier) attempt. Records are flushed and fsynced
 after each write so a Ctrl-C / OOM kill doesn't leave the log behind
 the on-disk state. Recovery semantics rely on this: the orchestrator
-treats *any* completed record (including ones with ``errors``) as
-"this tier was already attempted today" and skips re-downloading.
+skips re-downloading an init only once it has a *successful* record
+(``files_ok > 0``, see :func:`has_successful_record`). A failed attempt
+(all-404 / broken-collection window) leaves a record but stays retryable,
+so ``backfill`` can recover it later if the data is back on DWD.
 """
 
 from __future__ import annotations
@@ -79,9 +81,28 @@ def read_all(path: Path) -> list[dict[str, Any]]:
 
 
 def has_record(path: Path, init_utc: str, tier: str) -> bool:
-    """True iff a record for this (init, tier) already exists."""
+    """True iff a record for this (init, tier) already exists (any outcome)."""
     for row in read_all(path):
         if row.get("init_utc") == init_utc and row.get("tier") == tier:
+            return True
+    return False
+
+
+def has_successful_record(path: Path, init_utc: str, tier: str) -> bool:
+    """True iff a record for this (init, tier) exists with ``files_ok > 0``.
+
+    A *failed* attempt (``files_ok == 0`` — e.g. an all-404 because the run had
+    not yet published or had already rolled off DWD, or a stretch of broken
+    collection) is treated as **absent**, so a later ``backfill`` retries it
+    instead of skipping. Recovery would otherwise be permanently blocked by the
+    empty record the failed attempt left behind.
+    """
+    for row in read_all(path):
+        if (
+            row.get("init_utc") == init_utc
+            and row.get("tier") == tier
+            and row.get("files_ok", 0) > 0
+        ):
             return True
     return False
 

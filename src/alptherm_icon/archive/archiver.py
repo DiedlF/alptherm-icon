@@ -253,8 +253,11 @@ def archive_tier1(
 ) -> manifest.ManifestRecord | None:
     """Archive Tier 1 for one ICON-D2 run end-to-end.
 
-    Idempotent — if the manifest already has a tier1 record for this init,
-    returns ``None`` without re-downloading (unless ``force=True``).
+    Idempotent — if the manifest already has a *successful* tier1 record for
+    this init (``files_ok > 0``), returns ``None`` without re-downloading
+    (unless ``force=True``). A prior *failed* record (all-404 / broken-
+    collection window) does not block a retry, so ``backfill`` can recover the
+    run once it is back on DWD.
     """
     init = _ensure_utc(init)
     paths = ArchiveRoot(root=root)
@@ -263,13 +266,13 @@ def archive_tier1(
     init_utc = manifest.iso_z(init)
     hb_job = f"tier1-{init.hour:02d}"
 
-    if manifest.has_record(paths.manifest_path, init_utc, "tier1") and not force:
-        log.info("tier1 already recorded for %s — skipping", init_utc)
+    if manifest.has_successful_record(paths.manifest_path, init_utc, "tier1") and not force:
+        log.info("tier1 already archived for %s — skipping", init_utc)
         monitoring.write(
             root=root,
             job=hb_job,
             status="skip",
-            extra={"init_utc": init_utc, "reason": "already_recorded"},
+            extra={"init_utc": init_utc, "reason": "already_archived"},
         )
         return None
 
