@@ -1,23 +1,22 @@
-"""CLI for Komp. C — the convection kernel.
+"""CLI for Komp. C v0.1 — bulk mixed-layer evolution.
 
     python -m alptherm_icon.model run <region> --init <YYYYMMDDHH> \\
-        [--model bulk|parcel] [--flux-source proxy|icon] \\
-        [--lead-start 6] [--lead-end 12] [--sensible-fraction 0.3] [--v-sub 0]
+        [--flux-source proxy|icon] [--lead-start 6] [--lead-end 12] \\
+        [--sensible-fraction 0.3]
 
 Reads the morning profile NetCDF from Komp. B
 (`data/icon/<region>_<init>_lead<NNN>_profile.nc`) and the surface
-time series (`data/icon/<region>_<init>.nc`) and evolves the column from
-``lead_start`` to ``lead_end``.
-
-``--model bulk`` (default): v0.1/v0.2 mixed-layer encroachment → ``cbl_top``,
-``theta_mixed``, ``w_star``. ``--model parcel``: v0.3 bin-wise parcel theory
-(needs the region AHD at ``data/regions/<region>_ahd.nc``) → ``cbl_top``,
-``v_max``, ``cloud_base/top``, ``cloud_cover_octas``.
+time series (`data/icon/<region>_<init>.nc`), evolves the bulk
+mixed layer forward from ``lead_start`` to ``lead_end`` at hourly
+steps, and writes a NetCDF with the diurnal ``cbl_top``,
+``theta_mixed``, ``w_star`` series.
 
 Surface sensible-heat flux comes from one of two sources (``--flux-source``):
-``icon`` uses ASHFL_S directly (sign-flipped to model-positive); ``proxy``
-(default) uses ASOB_S × ``sensible_fraction``. Both are de-averaged from ICON's
-mean-since-init convention first (see ``model/forcing.py``).
+``icon`` uses ASHFL_S directly (v0.2, sign-flipped to model-positive);
+``proxy`` (default) uses ASOB_S × ``sensible_fraction``. Both are
+de-averaged from ICON's mean-since-init convention first (see
+``model/forcing.py``) — the v0.1 behaviour of feeding the running mean
+directly is gone.
 """
 
 from __future__ import annotations
@@ -31,11 +30,8 @@ import numpy as np
 import xarray as xr
 
 from alptherm_icon.model import forcing
-from alptherm_icon.model import parcel as parcel_model
-from alptherm_icon.model import thermo as th
 from alptherm_icon.model.mixed_layer import evolve_mixed_layer
 from alptherm_icon.model.thermo import potential_temperature, standard_pressure
-from alptherm_icon.regions.ahd import AHDProfile
 
 
 def _project_root() -> Path:
@@ -63,9 +59,6 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     profile = xr.open_dataset(profile_path)
     surface = xr.open_dataset(surface_path)
-
-    if args.model == "parcel":
-        return _run_parcel(args, root, init, profile, surface, profile_path, surface_path)
 
     # Build the morning sounding sorted surface-up.
     z = profile["height"].values
@@ -186,149 +179,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_ahd(root: Path, region: str) -> AHDProfile:
-    path = root / "data" / "regions" / f"{region}_ahd.nc"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"missing {path.relative_to(root)} — build the region AHD first "
-            f"(Komp. A), e.g.: python -m alptherm_icon.regions build {region}"
-        )
-    ds = xr.open_dataset(path)
-    return AHDProfile(
-        region_name=region,
-        z_bottom_m=ds["z_bottom"].values,
-        z_top_m=ds["z_top"].values,
-        s_g=ds["s_g"].values,
-        v_a=ds["v_a"].values,
-        region_area_m2=float(ds.attrs["region_area_m2"]),
-    )
-
-
-def _run_parcel(
-    args: argparse.Namespace,
-    root: Path,
-    init: datetime,
-    profile: xr.Dataset,
-    surface: xr.Dataset,
-    profile_path: Path,
-    surface_path: Path,
-) -> int:
-    """Komp. C v0.3 — bin-wise parcel theory driven by ICON forcing + AHD."""
-    ahd = _load_ahd(root, args.region)
-
-    # Morning sounding from the ICON profile: T and Td (from qv) vs height.
-    z = profile["height"].values
-    t = profile["t"].values
-    order = np.argsort(z)
-    z, t = z[order], t[order]
-    p = np.asarray(standard_pressure(z))
-    if "qv" in profile:
-        qv = profile["qv"].values[order]
-        r = qv / np.clip(1.0 - qv, 1e-9, None)  # specific humidity → mixing ratio
-        e_hpa = r * p / 100.0 / (th.EPSILON + r)
-        td = np.asarray(th.dewpoint_from_vapor_pressure(e_hpa))
-    else:
-        td = t - 5.0  # crude fallback if humidity wasn't fetched
-    grid = parcel_model.build_grid(z, t, td, ahd)
-    print(
-        f"parcel grid: {grid.z_center_m.size} layers, "
-        f"z=[{grid.z_center_m[0]:.0f}, {grid.z_center_m[-1]:.0f}] m; "
-        f"AHD region area {ahd.region_area_m2 / 1e6:.0f} km²"
-    )
-
-    # ICON surface forcing (de-averaged), windowed to [lead_start, lead_end].
-    full_times = surface.time.values
-    lead_s = ((full_times - np.datetime64(init)) / np.timedelta64(1, "s")).astype(float)
-    if args.flux_source == "icon" and "ashfl_s_mean" in surface:
-        p_sens_full = forcing.turbulent_flux_from_icon(surface["ashfl_s_mean"].values, lead_s)
-        src = "icon (−ASHFL_S)"
-    else:
-        p_sens_full = forcing.sensible_flux_proxy(
-            surface["asob_s_mean"].values, lead_s, args.sensible_fraction
-        )
-        src = f"proxy (ASOB_S × {args.sensible_fraction})"
-    flux_da = xr.DataArray(p_sens_full, coords={"time": full_times}, dims="time")
-    t_start = np.datetime64(init + timedelta(hours=args.lead_start))
-    t_end = np.datetime64(init + timedelta(hours=args.lead_end))
-    window = flux_da.sel(time=slice(t_start, t_end))
-    times = window.time.values
-    p_sens_series = np.asarray(window.values, dtype=np.float64)
-    if times.size < 2:
-        raise RuntimeError("need at least 2 surface steps in window")
-    dt_s = float((times[1] - times[0]) / np.timedelta64(1, "s"))
-    print(
-        f"forcing: {src}, {times.size} steps × {dt_s:.0f} s, "
-        f"P_sens range [{np.nanmin(p_sens_series):.1f}, {np.nanmax(p_sens_series):.1f}] W/m²; "
-        f"v_sub={args.v_sub} m/h"
-    )
-
-    def forcing_fn(s: int, _T_surf: float, _Td_surf: float) -> tuple[float, float]:
-        return float(max(p_sens_series[s], 0.0)), 0.0
-
-    steps = parcel_model.run_day(
-        grid, forcing_fn, len(times), dt_s,
-        u_km_h=args.wind_km_h, w_sub_m_s=args.v_sub / 3600.0,
-    )
-
-    def _col(attr: str) -> np.ndarray:
-        return np.array([getattr(s, attr) for s in steps], dtype=np.float64)
-
-    out_ds = xr.Dataset(
-        data_vars={
-            "cbl_top": ("time", _col("z_i_m"), {"units": "m", "long_name": "mixed-layer top (MSL)"}),
-            "v_max": ("time", _col("v_max_m_s"), {"units": "m/s", "long_name": "peak updraft speed"}),
-            "cloud_base": ("time", _col("cloud_base_m"), {"units": "m", "long_name": "cumulus base (MSL)"}),
-            "cloud_top": ("time", _col("cloud_top_m"), {"units": "m", "long_name": "cumulus top (MSL)"}),
-            "cloud_cover_octas": ("time", _col("cloud_cover_octas"), {"units": "octas", "long_name": "cloud cover"}),
-        },
-        coords={"time": ("time", times)},
-        attrs={
-            "region_name": args.region,
-            "init_time_utc": init.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "profile_source": str(profile_path.relative_to(root)),
-            "surface_source": str(surface_path.relative_to(root)),
-            "flux_source": args.flux_source,
-            "v_sub_m_per_h": float(args.v_sub),
-            "model_version": "C-v0.3-parcel",
-        },
-    )
-    out_dir = root / "data" / "model"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{args.region}_{init:%Y%m%d%H}_parcel.nc"
-    out_ds.to_netcdf(out)
-    print(f"wrote {out.relative_to(root)} ({out.stat().st_size / 1e3:.1f} kB)")
-    zi = _col("z_i_m")
-    cb = _col("cloud_base_m")
-    cloudy = np.isfinite(cb)
-    onset = str(times[cloudy.argmax()])[:16] if cloudy.any() else "none"
-    print(
-        f"  CBL top: start {zi[0]:.0f} m → max {zi.max():.0f} m; "
-        f"v_max {out_ds['v_max'].max().item():.2f} m/s; "
-        f"cloud onset {onset}, max cover {out_ds['cloud_cover_octas'].max().item():.1f} octas"
-    )
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m alptherm_icon.model")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_run = sub.add_parser("run", help="evolve the convection model for a region/init")
+    p_run = sub.add_parser("run", help="evolve bulk mixed layer for a region/init")
     p_run.add_argument("region")
     p_run.add_argument("--init", required=True, help="init time UTC, YYYYMMDDHH")
-    p_run.add_argument(
-        "--model", choices=("bulk", "parcel"), default="bulk",
-        help="'bulk' = v0.1/v0.2 mixed-layer encroachment (default, fast); "
-        "'parcel' = v0.3 bin-wise parcel theory (needs the region AHD)",
-    )
-    p_run.add_argument(
-        "--v-sub", type=float, default=0.0,
-        help="large-scale subsidence rate [m/h] for the parcel model (default: 0)",
-    )
-    p_run.add_argument(
-        "--wind-km-h", type=float, default=0.0,
-        help="mean wind [km/h] for the parcel model's wind reduction (eq 19; default: 0)",
-    )
     p_run.add_argument(
         "--lead-profile", type=int, default=6,
         help="forecast hour the morning profile was saved at (default: 6)",
