@@ -1,0 +1,30 @@
+{
+  "type": "FeatureCollection",
+  "name": "voralpen_liechti",
+  "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "voralpen_liechti",
+        "label": "Voralpen / Swiss plateau (Liechti 1994 validation)",
+        "reference": "Liechti & Neininger 1994 — ALPTHERM worked example (Swiss Nationals, May 1993). Pre-Alps + foreland feeding the convective day.",
+        "source": "hand-defined polygon bounded by the paper's ground stations (Payerne, Chasseral, Napf, Pilatus, Moleson); not an operational region",
+        "station_bounds_lonlat": "Payerne 6.94/46.81, Chasseral 7.06/47.13, Napf 7.94/47.00, Pilatus 8.25/46.98, Moleson 7.02/46.55",
+        "status": "validation_reference"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [6.80, 46.55],
+            [8.40, 46.55],
+            [8.40, 47.20],
+            [6.80, 47.20],
+            [6.80, 46.55]
+          ]
+        ]
+      }
+    }
+  ]
+}

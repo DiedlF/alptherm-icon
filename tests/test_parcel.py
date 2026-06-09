@@ -84,6 +84,24 @@ def test_ascent_stable_profile_limits_height() -> None:
     assert strong.top_idx <= weak.top_idx
 
 
+def test_ascent_caps_at_inversion() -> None:
+    """A strong inversion caps the buoyant top — the parcel must not run to the
+    domain top on the moist adiabat (the cloud-top cap)."""
+    edges = np.arange(400.0, 5001.0, 100.0)
+    zc = 0.5 * (edges[:-1] + edges[1:])
+    p = np.asarray(th.standard_pressure(zc), dtype=np.float64)
+    theta0 = th.potential_temperature(293.0, p[0])
+    dtheta_dz = np.where(zc < 1500.0, 0.002, 0.020)  # weakly stable, then inversion
+    theta = theta0 + np.cumsum(np.concatenate([[0.0], np.diff(zc)]) * dtheta_dz)
+    grid = P.LayerGrid(
+        z_center_m=zc, dz_m=100.0,
+        s_g_m2=np.full(zc.size, 1e6), v_a_m3=np.full(zc.size, 1e8),
+        theta_K=theta, q_kg_kg=np.full(zc.size, 0.009), p_Pa=p, region_area_m2=1e6,
+    )
+    asc = P.ascend_parcel(grid, 0, delta_t_K=2.0)
+    assert zc[asc.top_idx] < 2500.0  # capped near the inversion, not the 4950 m top
+
+
 def test_ascent_moist_parcel_condenses() -> None:
     # High surface humidity → parcel saturates while still buoyant → cloud base set.
     grid = _linear_grid(dtheta_dz=0.001, q0=0.011, surface_T=292.0)
@@ -99,14 +117,22 @@ def test_heat_and_mix_grows_mixed_layer() -> None:
     grid = _linear_grid(dtheta_dz=0.004)
     z0 = P.mixed_layer_top(grid)
     for _ in range(60):
-        P.heat_and_mix(grid, p_sens_w_m2=150.0, dt_s=120.0)
+        P.heat_and_mix(grid, p_sens_w_m2=150.0, p_lat_w_m2=0.0, dt_s=120.0)
     assert P.mixed_layer_top(grid) > z0
+
+
+def test_heat_and_mix_latent_moistens_surface() -> None:
+    grid = _linear_grid(dtheta_dz=0.004, q0=0.005)
+    q0 = float(grid.q_kg_kg[0])
+    for _ in range(60):
+        P.heat_and_mix(grid, p_sens_w_m2=150.0, p_lat_w_m2=200.0, dt_s=120.0)
+    assert float(grid.q_kg_kg[0]) > q0  # evaporation raised the mixed-layer moisture
 
 
 def test_heat_and_mix_noop_without_flux() -> None:
     grid = _linear_grid(dtheta_dz=0.004)
     theta_before = grid.theta_K.copy()
-    P.heat_and_mix(grid, p_sens_w_m2=0.0, dt_s=120.0)
+    P.heat_and_mix(grid, p_sens_w_m2=0.0, p_lat_w_m2=0.0, dt_s=120.0)
     assert np.allclose(grid.theta_K, theta_before)
 
 

@@ -239,20 +239,29 @@ def _run_parcel(
     # ICON surface forcing (de-averaged), windowed to [lead_start, lead_end].
     full_times = surface.time.values
     lead_s = ((full_times - np.datetime64(init)) / np.timedelta64(1, "s")).astype(float)
+    p_lat_full = np.zeros_like(lead_s)
     if args.flux_source == "icon" and "ashfl_s_mean" in surface:
         p_sens_full = forcing.turbulent_flux_from_icon(surface["ashfl_s_mean"].values, lead_s)
-        src = "icon (−ASHFL_S)"
+        if "alhfl_s_mean" in surface:
+            p_lat_full = forcing.turbulent_flux_from_icon(surface["alhfl_s_mean"].values, lead_s)
+        src = "icon (−ASHFL_S/−ALHFL_S)"
     else:
         p_sens_full = forcing.sensible_flux_proxy(
             surface["asob_s_mean"].values, lead_s, args.sensible_fraction
         )
         src = f"proxy (ASOB_S × {args.sensible_fraction})"
-    flux_da = xr.DataArray(p_sens_full, coords={"time": full_times}, dims="time")
     t_start = np.datetime64(init + timedelta(hours=args.lead_start))
     t_end = np.datetime64(init + timedelta(hours=args.lead_end))
-    window = flux_da.sel(time=slice(t_start, t_end))
-    times = window.time.values
-    p_sens_series = np.asarray(window.values, dtype=np.float64)
+
+    def _window(arr: np.ndarray) -> np.ndarray:
+        da = xr.DataArray(arr, coords={"time": full_times}, dims="time")
+        return np.asarray(da.sel(time=slice(t_start, t_end)).values, dtype=np.float64)
+
+    times = xr.DataArray(p_sens_full, coords={"time": full_times}, dims="time").sel(
+        time=slice(t_start, t_end)
+    ).time.values
+    p_sens_series = _window(p_sens_full)
+    p_lat_series = _window(p_lat_full)
     if times.size < 2:
         raise RuntimeError("need at least 2 surface steps in window")
     dt_s = float((times[1] - times[0]) / np.timedelta64(1, "s"))
@@ -263,7 +272,7 @@ def _run_parcel(
     )
 
     def forcing_fn(s: int, _T_surf: float, _Td_surf: float) -> tuple[float, float]:
-        return float(max(p_sens_series[s], 0.0)), 0.0
+        return float(max(p_sens_series[s], 0.0)), float(max(p_lat_series[s], 0.0))
 
     steps = parcel_model.run_day(
         grid, forcing_fn, len(times), dt_s,
@@ -273,15 +282,22 @@ def _run_parcel(
     def _col(attr: str) -> np.ndarray:
         return np.array([getattr(s, attr) for s in steps], dtype=np.float64)
 
+    # v(z, t): per-layer updraft speed, the headline lift-rate field (plan §5.3).
+    v_zt = np.vstack([s.v_profile_m_s for s in steps])  # (time, z)
+
     out_ds = xr.Dataset(
         data_vars={
+            "v": (
+                ("time", "z"), v_zt,
+                {"units": "m/s", "long_name": "updraft speed (100 m × step bins)"},
+            ),
             "cbl_top": ("time", _col("z_i_m"), {"units": "m", "long_name": "mixed-layer top (MSL)"}),
             "v_max": ("time", _col("v_max_m_s"), {"units": "m/s", "long_name": "peak updraft speed"}),
             "cloud_base": ("time", _col("cloud_base_m"), {"units": "m", "long_name": "cumulus base (MSL)"}),
             "cloud_top": ("time", _col("cloud_top_m"), {"units": "m", "long_name": "cumulus top (MSL)"}),
             "cloud_cover_octas": ("time", _col("cloud_cover_octas"), {"units": "octas", "long_name": "cloud cover"}),
         },
-        coords={"time": ("time", times)},
+        coords={"time": ("time", times), "z": ("z", grid.z_center_m, {"units": "m", "long_name": "height MSL"})},
         attrs={
             "region_name": args.region,
             "init_time_utc": init.strftime("%Y-%m-%dT%H:%M:%SZ"),
