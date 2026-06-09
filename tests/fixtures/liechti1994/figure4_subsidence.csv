@@ -1,0 +1,10 @@
+# Liechti & Neininger 1994, Figure 4 — subsidence sensitivity (Example 1).
+# Identical initial profile (table2/figure3 case, dry air above 1500 m ASL),
+# run at 4 subsidence rates. This is the qualitative/threshold golden test:
+# cloud cover and cumulus depth must decrease monotonically with v_sub and
+# vanish by 20 m/h. max_cloud_cover_octas digitized from the paper's octa row.
+v_sub_m_per_h,max_cloud_cover_octas,clouds_develop,description
+0,2,yes,perfect gliding; 1-2/8 shallow cumulus
+5,1,yes,cumulus vertical extent clearly reduced; cover 0-1/8
+10,1,marginal,clouds only briefly ~13:00 and again after 16:00
+20,0,no,no convective clouds develop at all

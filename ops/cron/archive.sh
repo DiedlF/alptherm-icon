@@ -10,6 +10,7 @@
 #     archive.sh trigger                 # diagnostic gut-day decision
 #     archive.sh download-pending        # nightly bulk Tier-2 fetch
 #     archive.sh backfill N              # catch up last N days × 4 anchors
+#     archive.sh prune N                 # trim local cache to last N days (S3-confirmed)
 #     archive.sh status                  # manifest summary
 #
 # Recommended crontab (all times UTC; matches plan §9.3 table):
@@ -26,11 +27,14 @@
 #     # Tier-2 nightly bulk download — any fired decision still without
 #     # a tier2 row. Runs when bandwidth is free.
 #     0  23 * * * /path/ops/cron/archive.sh download-pending
+#     # Local-cache trim — keep last N days of raw grib; S3 is the archive of
+#     # record. Runs deep-night after download-pending has finished.
+#     30 1 * * * /path/ops/cron/archive.sh prune 4
 
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-    echo "usage: $0 <tier1 HH | trigger | download-pending | backfill N | status>" >&2
+    echo "usage: $0 <tier1 HH | trigger | download-pending | backfill N | prune N | status>" >&2
     exit 2
 fi
 
@@ -89,6 +93,11 @@ case "$SUBCMD" in
         DAYS="${1:-2}"
         echo "[$(date -u +%FT%TZ)] backfill days=$DAYS starting" | tee -a "$LOG_FILE"
         python -m alptherm_icon.archive backfill --days "$DAYS" >> "$LOG_FILE" 2>&1
+        ;;
+    prune)
+        KEEP="${1:-4}"
+        echo "[$(date -u +%FT%TZ)] prune keep-days=$KEEP starting" | tee -a "$LOG_FILE"
+        python -m alptherm_icon.archive prune-local --keep-days "$KEEP" --apply >> "$LOG_FILE" 2>&1
         ;;
     status)
         python -m alptherm_icon.archive status

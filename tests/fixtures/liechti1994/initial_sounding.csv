@@ -1,0 +1,25 @@
+# Liechti & Neininger 1994, Table 1 — input data for the ALPTHERM worked example.
+# Morning sounding = weighted superposition of these two sources (Fig 2):
+#   ground stations get fixed weight within topography; radiosonde weight grows
+#   with height above the topography. weight column = paper's "W".
+# Transcribed from the scanned PDF; T/Td in deg C, height in m ASL.
+# HIGH CONFIDENCE for the scalar values; verify against PDF before enshrining.
+source,height_m,T_C,Td_C,weight,station
+radiosonde_02h,500,9,6,,Payerne
+radiosonde_02h,800,13,7,,Payerne
+radiosonde_02h,1500,9,2,,Payerne
+radiosonde_02h,2100,6,-18,,Payerne
+radiosonde_02h,3000,0,-12,,Payerne
+radiosonde_02h,4200,-9,-15,,Payerne
+radiosonde_02h,4800,-11,-22,,Payerne
+radiosonde_02h,5000,-12,-22,,Payerne
+station_08h,400,8,6,1,Buchs-Suhr
+station_08h,800,11,6,1,Laegern
+station_08h,1100,12,6,1,Hoernli
+station_08h,1400,11,4,1,Napf
+station_08h,1600,9.5,1,1,Chasseral
+station_08h,2000,7,-1,5,Moleson
+station_08h,2100,6,-1,5,Pilatus
+station_08h,2300,4.5,1,5,Guetsch
+station_08h,3600,-5,-8,5,Jungfraujoch
+station_08h,4200,-9,-15,5,Sondenpunkt

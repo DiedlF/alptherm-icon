@@ -150,10 +150,17 @@ def _build_dataset(
 
 def append_tier1_to_zarr(
     grib_paths: dict[tuple[str, int], Path],
-    zarr_path: Path,
+    zarr_target: Path | str,
     init: dt.datetime,
+    storage_options: dict | None = None,
 ) -> int:
     """Stack tier-1 GRIBs and append to the daily Zarr archive.
+
+    ``zarr_target`` is either a local :class:`~pathlib.Path` or an
+    ``s3://bucket/prefix`` URL. For the S3 case pass ``storage_options``
+    (endpoint + credentials, see :attr:`alptherm_icon.archive.s3.S3Config`
+    ``.storage_options``) — the archive of record lives in object storage
+    while local disk is just a rolling cache (plan §9.6).
 
     Returns the number of time-steps written (0 if nothing usable).
     """
@@ -161,13 +168,29 @@ def append_tier1_to_zarr(
     if ds is None:
         return 0
 
-    zarr_path.parent.mkdir(parents=True, exist_ok=True)
     encoding = {
         var: {"chunks": (24, ds.sizes["latitude"], ds.sizes["longitude"])}
         for var in ds.data_vars
     }
-    if zarr_path.exists():
-        ds.to_zarr(zarr_path, mode="a", append_dim="time")
+
+    if storage_options is None and isinstance(zarr_target, Path):
+        # Local disk: keep the original semantics exactly.
+        zarr_target.parent.mkdir(parents=True, exist_ok=True)
+        store: Path | object = zarr_target
+        exists = zarr_target.exists()
     else:
-        ds.to_zarr(zarr_path, mode="w", encoding=encoding)
+        # Object storage (or any fsspec URL). A Zarr group is identified by
+        # its top-level ``.zgroup`` / ``.zmetadata`` key — that's the
+        # store-agnostic equivalent of ``Path.exists()`` and avoids a
+        # local-filesystem assumption.
+        import fsspec
+
+        mapper = fsspec.get_mapper(str(zarr_target), **(storage_options or {}))
+        store = mapper
+        exists = ".zgroup" in mapper or ".zmetadata" in mapper
+
+    if exists:
+        ds.to_zarr(store, mode="a", append_dim="time")
+    else:
+        ds.to_zarr(store, mode="w", encoding=encoding)
     return int(ds.sizes["time"])

@@ -1,0 +1,34 @@
+# Liechti & Neininger 1994, Table 2 — ALPTHERM gliding forecast (the golden output series).
+# Primary M3 validation target. local time, ground temp & dewpoint [deg C],
+# cumulus base/top [m ASL] (blank = no cloud at that step).
+# temp_C / dewp_C: HIGH confidence (clean print). cloud_base_m / cloud_top_m:
+# LOWER confidence (dense table) — spot-check vs PDF before trusting exactly.
+time,temp_C,dewp_C,cloud_base_m,cloud_top_m
+07:30,9.1,6.1,,
+08:00,9.5,6.2,,
+08:30,10.6,6.5,,
+09:00,11.8,7.0,,
+09:30,12.6,7.5,,
+10:00,14.0,8.1,,
+10:30,15.1,7.7,,
+11:00,16.1,9.2,,
+11:30,17.1,9.5,,
+12:00,17.9,9.6,,
+12:30,18.6,9.7,,
+13:00,19.2,9.6,1700,1700
+13:30,19.8,9.5,1800,2000
+14:00,20.2,9.4,1900,2200
+14:30,20.6,9.0,2000,2200
+15:00,21.0,8.5,2100,2200
+15:30,21.3,8.0,2300,2300
+16:00,21.5,7.6,2300,2400
+16:30,21.7,7.3,2300,2500
+17:00,21.9,7.1,2300,2600
+17:30,22.0,7.0,2400,2500
+18:00,21.8,6.9,2400,2500
+18:30,21.6,6.0,,
+19:00,21.5,6.6,,
+19:30,21.5,6.6,,
+20:00,20.8,6.4,,
+20:30,20.0,6.3,,
+21:00,19.6,6.3,,

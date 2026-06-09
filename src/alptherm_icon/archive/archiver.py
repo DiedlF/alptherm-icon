@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from alptherm_icon import monitoring
-from alptherm_icon.archive import manifest
+from alptherm_icon.archive import manifest, s3
 from alptherm_icon.archive.trigger import (
     TRIGGER_LEAD_RANGE,
     TriggerDecision,
@@ -66,7 +66,11 @@ class TierResult:
     files_error: int
     bytes_on_disk: int
     paths: dict[tuple[str, int], Path] = field(default_factory=dict)
-    """(var, lead_h) -> local grib2 path; only populated for tier1."""
+    """(var, lead_h) -> local grib2 path; only populated for tier1 (zarr append)."""
+    local_paths: list[Path] = field(default_factory=list)
+    """Every successfully-downloaded local grib2 path, all tiers — for S3 raw upload.
+    (``paths`` can't carry tier2 here: its (var, lead) key collides across the 65
+    model levels of a profile.)"""
     errors: list[str] = field(default_factory=list)
 
 
@@ -98,6 +102,36 @@ class ArchiveRoot:
     @property
     def zarr_tier1_path(self) -> Path:
         return self.archive_dir / "zarr" / "tier1.zarr"
+
+    def raw_key(self, local_path: Path) -> str:
+        """S3 object key for a raw grib2 file: its path relative to the
+        ``grib/`` tree, so the bucket mirrors the on-disk layout
+        (``grib/YYYY/MM/DD/HH/tierN/<file>.grib2``)."""
+        return local_path.resolve().relative_to(self.archive_dir.resolve()).as_posix()
+
+
+def _upload_raw_to_s3(
+    cfg: s3.S3Config,
+    paths: ArchiveRoot,
+    local_paths: list[Path],
+) -> int:
+    """Mirror freshly-downloaded raw grib2 files into the Object-Lock raw bucket.
+
+    Best-effort and idempotent — already-present keys are skipped, per-file
+    errors are logged but never abort the run (the local cache already holds
+    the data; a failed upload retries on the next archive pass / migrate).
+    Returns the number of files newly uploaded.
+    """
+    s3_client = s3.client(cfg)
+    uploaded = 0
+    for p in local_paths:
+        key = paths.raw_key(p)
+        try:
+            if s3.upload_raw(cfg, p, key, s3=s3_client):
+                uploaded += 1
+        except Exception as exc:  # noqa: BLE001 — never block archival on upload
+            log.warning("s3 raw upload failed for %s: %r", key, exc)
+    return uploaded
 
 
 def _ensure_utc(t: dt.datetime) -> dt.datetime:
@@ -131,6 +165,7 @@ def _download_job(
             result.files_404 += 1
             continue
         result.files_ok += 1
+        result.local_paths.append(path)
         try:
             result.bytes_on_disk += path.stat().st_size
         except OSError:
@@ -218,22 +253,26 @@ def archive_tier1(
 ) -> manifest.ManifestRecord | None:
     """Archive Tier 1 for one ICON-D2 run end-to-end.
 
-    Idempotent — if the manifest already has a tier1 record for this init,
-    returns ``None`` without re-downloading (unless ``force=True``).
+    Idempotent — if the manifest already has a *successful* tier1 record for
+    this init (``files_ok > 0``), returns ``None`` without re-downloading
+    (unless ``force=True``). A prior *failed* record (all-404 / broken-
+    collection window) does not block a retry, so ``backfill`` can recover the
+    run once it is back on DWD.
     """
     init = _ensure_utc(init)
     paths = ArchiveRoot(root=root)
     paths.archive_dir.mkdir(parents=True, exist_ok=True)
+    cfg = s3.load_s3_config(root)
     init_utc = manifest.iso_z(init)
     hb_job = f"tier1-{init.hour:02d}"
 
-    if manifest.has_record(paths.manifest_path, init_utc, "tier1") and not force:
-        log.info("tier1 already recorded for %s — skipping", init_utc)
+    if manifest.has_successful_record(paths.manifest_path, init_utc, "tier1") and not force:
+        log.info("tier1 already archived for %s — skipping", init_utc)
         monitoring.write(
             root=root,
             job=hb_job,
             status="skip",
-            extra={"init_utc": init_utc, "reason": "already_recorded"},
+            extra={"init_utc": init_utc, "reason": "already_archived"},
         )
         return None
 
@@ -255,15 +294,24 @@ def archive_tier1(
         result.bytes_on_disk,
     )
 
-    # Zarr append is best-effort — never block the archive on it.
+    # Mirror raw grib2 into the Object-Lock raw bucket (archive of record).
+    if cfg is not None and result.local_paths:
+        n_up = _upload_raw_to_s3(cfg, paths, result.local_paths)
+        log.info("s3 raw upload: %d new file(s) → %s", n_up, cfg.raw_bucket)
+
+    # Zarr append is best-effort — never block the archive on it. Writes to
+    # the S3 zarr bucket when configured, else the local rolling cache.
     if not skip_zarr and result.files_ok > 0:
+        zarr_target: Path | str = cfg.zarr_url if cfg is not None else paths.zarr_tier1_path
+        zarr_opts = cfg.storage_options if cfg is not None else None
         try:
             n_steps = append_tier1_to_zarr(
                 grib_paths=result.paths,
-                zarr_path=paths.zarr_tier1_path,
+                zarr_target=zarr_target,
                 init=init,
+                storage_options=zarr_opts,
             )
-            log.info("zarr append: %d time-steps written", n_steps)
+            log.info("zarr append: %d time-steps written → %s", n_steps, zarr_target)
         except Exception as exc:  # noqa: BLE001
             log.warning("zarr append failed for %s: %r", init_utc, exc)
 
@@ -419,6 +467,7 @@ def download_pending_tier2(
     404s — the tier2 record still gets written so the pending row clears.
     """
     paths = ArchiveRoot(root=root)
+    cfg = s3.load_s3_config(root)
     pending = manifest.pending_tier2_targets(paths.manifest_path)
     if not pending:
         log.info("no pending tier2 downloads")
@@ -466,6 +515,12 @@ def download_pending_tier2(
             result.bytes_on_disk,
         )
 
+        # Tier-2 full profiles are the monotonic grower (plan §9.6) — mirror
+        # them straight into the Object-Lock raw bucket.
+        if cfg is not None and result.local_paths:
+            n_up = _upload_raw_to_s3(cfg, paths, result.local_paths)
+            log.info("s3 raw upload: %d new file(s) → %s", n_up, cfg.raw_bucket)
+
     total_ok = sum(r.files_ok for r in written)
     total_bytes = sum(r.bytes_on_disk for r in written)
     monitoring.write(
@@ -480,3 +535,217 @@ def download_pending_tier2(
         },
     )
     return written
+
+
+# ---------------------------------------------------------------------------
+# One-time migration — push the existing local archive up to S3 (plan §9.6)
+# ---------------------------------------------------------------------------
+
+
+def _existing_raw_keys(cfg: s3.S3Config, s3_client) -> set[str]:
+    """List every object key already under ``grib/`` in the raw bucket.
+
+    One paginated LIST is far cheaper than a HEAD per local file when the
+    migration is resumed — we diff locally and only upload what's missing.
+    """
+    keys: set[str] = set()
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=cfg.raw_bucket, Prefix="grib/"):
+        for obj in page.get("Contents", []):
+            keys.add(obj["Key"])
+    return keys
+
+
+def migrate_to_s3(
+    root: Path,
+    do_raw: bool = True,
+    do_zarr: bool = True,
+    workers: int = 24,
+    log_every: int = 2000,
+) -> dict[str, int]:
+    """Upload the existing local ``data/archive/`` to S3 (one-time, resumable).
+
+    - Raw grib2 → the Object-Lock raw bucket, skipping keys already present
+      (so an interrupted run resumes cheaply). Uploads run on a thread pool
+      because the cost is per-file round-trip latency, not throughput — the
+      files are small (~2 MB) and Hetzner is happy with concurrent PUTs.
+    - The local ``tier1.zarr`` → the zarr bucket via a recursive ``s3fs`` put.
+
+    Returns a small stats dict. Idempotent: safe to re-run.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    cfg = s3.load_s3_config(root)
+    if cfg is None:
+        raise RuntimeError(
+            "S3 not configured — set credentials in data/archive.env "
+            "(see data/archive.env.example)"
+        )
+    paths = ArchiveRoot(root=root)
+    stats = {"raw_uploaded": 0, "raw_skipped": 0, "raw_failed": 0, "zarr": 0}
+
+    if do_raw:
+        s3_client = s3.client(cfg)
+        s3.ensure_raw_retention(cfg, s3=s3_client)  # default Governance lock on PUT
+        log.info("migrate: listing existing raw keys …")
+        existing = _existing_raw_keys(cfg, s3_client)
+        log.info("migrate: %d raw keys already in bucket", len(existing))
+        grib_root = paths.archive_dir / "grib"
+        local_files = sorted(grib_root.rglob("*.grib2")) if grib_root.exists() else []
+        todo = [(p, paths.raw_key(p)) for p in local_files if paths.raw_key(p) not in existing]
+        stats["raw_skipped"] = len(local_files) - len(todo)
+        log.info(
+            "migrate: %d local raw files, %d already present, %d to upload (%d workers)",
+            len(local_files), stats["raw_skipped"], len(todo), workers,
+        )
+
+        # boto3 clients aren't thread-safe; give each worker thread its own.
+        _tls = threading.local()
+
+        def _upload(item: tuple[Path, str]) -> str:
+            p, key = item
+            cl = getattr(_tls, "client", None)
+            if cl is None:
+                cl = _tls.client = s3.client(cfg)
+            s3.upload_raw(cfg, p, key, s3=cl, check_exists=False)
+            return key
+
+        done = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_upload, it): it for it in todo}
+            for fut in as_completed(futures):
+                done += 1
+                try:
+                    fut.result()
+                    stats["raw_uploaded"] += 1
+                except Exception as exc:  # noqa: BLE001
+                    stats["raw_failed"] += 1
+                    log.warning("migrate: raw upload failed for %s: %r", futures[fut][1], exc)
+                if done % log_every == 0:
+                    log.info(
+                        "migrate raw: %d/%d (up=%d fail=%d)",
+                        done, len(todo), stats["raw_uploaded"], stats["raw_failed"],
+                    )
+
+    if do_zarr:
+        local_zarr = paths.zarr_tier1_path
+        if local_zarr.exists():
+            # boto3 (not s3fs) so request clock-skew is auto-corrected and a
+            # failed run can't strand orphan chunks — see s3.upload_zarr_tree.
+            zstats = s3.upload_zarr_tree(cfg, local_zarr, workers=workers)
+            stats["zarr"] = 1 if not zstats["failed"] else 0
+            stats["zarr_failed"] = zstats["failed"]
+        else:
+            log.info("migrate: no local zarr at %s — skipping", local_zarr)
+
+    log.info("migrate done: %s", stats)
+    return stats
+
+
+def _init_date_from_raw_path(grib_root: Path, p: Path) -> dt.date | None:
+    """Parse the init *date* from a raw grib path ``YYYY/MM/DD/HH/tierN/file``.
+
+    Returns ``None`` if the path doesn't match the expected layout (such a
+    file is treated as un-prunable — we never delete what we can't date).
+    """
+    try:
+        rel = p.resolve().relative_to(grib_root.resolve()).parts
+    except ValueError:
+        return None
+    if len(rel) < 4:
+        return None
+    try:
+        return dt.date(int(rel[0]), int(rel[1]), int(rel[2]))
+    except ValueError:
+        return None
+
+
+def prune_local(
+    root: Path,
+    keep_days: int = 4,
+    apply: bool = False,
+    now: dt.datetime | None = None,
+) -> dict[str, int]:
+    """Reclaim disk by deleting old local raw grib that is safely in S3.
+
+    The local ``data/archive/grib`` tree is only a rolling working cache; S3
+    is the archive of record. This trims it to the last ``keep_days`` of init
+    dates, deleting older files **only after confirming the same key exists in
+    the raw bucket** (one paginated LIST, then a local set-diff — never a blind
+    delete). Files newer than the window, files we can't date, and files not
+    yet confirmed in S3 are all left untouched.
+
+    Dry-run by default: pass ``apply=True`` to actually unlink. The zarr is
+    never pruned (it's a single append-only store, not a rolling cache).
+
+    Returns a stats dict with counts and ``freed_bytes``.
+    """
+    cfg = s3.load_s3_config(root)
+    if cfg is None:
+        raise RuntimeError(
+            "S3 not configured — refusing to prune the local cache without an "
+            "archive of record. Set credentials in data/archive.env."
+        )
+    now = now or dt.datetime.now(dt.timezone.utc)
+    cutoff = now.date() - dt.timedelta(days=keep_days)
+
+    paths = ArchiveRoot(root=root)
+    grib_root = paths.archive_dir / "grib"
+    stats = {
+        "scanned": 0, "kept_recent": 0, "undatable": 0,
+        "unconfirmed": 0, "deleted": 0, "freed_bytes": 0,
+    }
+    if not grib_root.exists():
+        log.info("prune: no local grib tree at %s — nothing to do", grib_root)
+        return stats
+
+    s3_client = s3.client(cfg)
+    log.info("prune: listing raw keys already in s3://%s …", cfg.raw_bucket)
+    existing = _existing_raw_keys(cfg, s3_client)
+    log.info("prune: %d keys in bucket; keep_days=%d cutoff<%s apply=%s",
+             len(existing), keep_days, cutoff.isoformat(), apply)
+
+    local_files = sorted(grib_root.rglob("*.grib2"))
+    for p in local_files:
+        stats["scanned"] += 1
+        init_date = _init_date_from_raw_path(grib_root, p)
+        if init_date is None:
+            stats["undatable"] += 1
+            continue
+        if init_date >= cutoff:
+            stats["kept_recent"] += 1
+            continue
+        if paths.raw_key(p) not in existing:
+            stats["unconfirmed"] += 1
+            log.debug("prune: NOT in s3, keeping %s", paths.raw_key(p))
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        if apply:
+            try:
+                p.unlink()
+            except OSError as exc:  # noqa: BLE001
+                log.warning("prune: failed to delete %s: %r", p, exc)
+                continue
+        stats["deleted"] += 1
+        stats["freed_bytes"] += size
+
+    if apply:
+        _remove_empty_dirs(grib_root)
+    log.info("prune %s done: %s", "APPLY" if apply else "DRY-RUN", stats)
+    return stats
+
+
+def _remove_empty_dirs(top: Path) -> None:
+    """Recursively drop now-empty directories left behind after pruning."""
+    for d in sorted((p for p in top.rglob("*") if p.is_dir()), reverse=True):
+        try:
+            next(d.iterdir())
+        except StopIteration:
+            try:
+                d.rmdir()
+            except OSError:
+                pass
