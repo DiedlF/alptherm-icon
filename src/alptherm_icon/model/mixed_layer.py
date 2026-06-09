@@ -6,7 +6,8 @@ the integrated θ deficit of the initial profile below z_i equals H_cum.
 The mixed-layer θ_m is then θ_initial(z_i) (no entrainment closure).
 
 Bin-wise parcel theory + AHD-weighted bin coupling (the real ALPTHERM) is
-deferred to v0.2.
+deferred to v0.3; v0.2 keeps this encroachment model but feeds it de-averaged
+ICON surface fluxes (see model/forcing.py).
 """
 
 from __future__ import annotations

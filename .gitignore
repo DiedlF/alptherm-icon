@@ -26,6 +26,9 @@ data/monitoring.env
 data/archive.env
 data/*.log
 
+# Runtime crontab snapshots (not source)
+ops/cron/backups/
+
 # Python
 __pycache__/
 *.py[cod]

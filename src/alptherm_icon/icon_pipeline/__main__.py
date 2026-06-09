@@ -1,7 +1,7 @@
 """CLI for Komp. B — DWD ICON-D2 surface fetch.
 
     python -m alptherm_icon.icon_pipeline fetch <region> --init <YYYYMMDDHH> \\
-        [--vars t_2m,asob_s] [--lead-max 48]
+        [--vars t_2m,asob_s,athb_s,ashfl_s,alhfl_s,t_g] [--lead-max 48]
 
 Reads the region polygon from `configs/regions/<region>.geojson`,
 downloads ICON-D2 GRIB2 surface files for each (var, lead) into
@@ -123,8 +123,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_fetch.add_argument(
         "--vars",
-        default="t_2m,asob_s",
-        help="comma-separated DWD variable tokens (default: t_2m,asob_s)",
+        default="t_2m,asob_s,athb_s,ashfl_s,alhfl_s,t_g",
+        help="comma-separated DWD variable tokens "
+        "(default: the Komp-C surface set t_2m,asob_s,athb_s,ashfl_s,alhfl_s,t_g)",
     )
     p_fetch.add_argument(
         "--lead-max",

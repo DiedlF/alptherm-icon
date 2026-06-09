@@ -1,7 +1,7 @@
 """Minimal thermodynamic helpers for Komp. C v0.1.
 
 Dry-air constants only. No moisture handling yet (no LCL, no moist
-adiabat, no virtual temperature) — those land in v0.2 together with
+adiabat, no virtual temperature) — those land in v0.3 together with
 bin-wise parcel theory.
 """
 

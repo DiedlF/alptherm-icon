@@ -1,19 +1,22 @@
 """CLI for Komp. C v0.1 — bulk mixed-layer evolution.
 
     python -m alptherm_icon.model run <region> --init <YYYYMMDDHH> \\
-        [--lead-start 6] [--lead-end 12] [--sensible-fraction 0.3]
+        [--flux-source proxy|icon] [--lead-start 6] [--lead-end 12] \\
+        [--sensible-fraction 0.3]
 
 Reads the morning profile NetCDF from Komp. B
 (`data/icon/<region>_<init>_lead<NNN>_profile.nc`) and the surface
 time series (`data/icon/<region>_<init>.nc`), evolves the bulk
 mixed layer forward from ``lead_start`` to ``lead_end`` at hourly
-steps using ICON ASOB_S × ``sensible_fraction`` as the surface
-sensible-heat-flux proxy, and writes a NetCDF with the diurnal
-``cbl_top``, ``theta_mixed``, ``w_star`` series.
+steps, and writes a NetCDF with the diurnal ``cbl_top``,
+``theta_mixed``, ``w_star`` series.
 
-Surface sensible heat flux is approximated as a constant fraction of
-net surface SW. ICON ICON-D2 ships ASHFL_S (true sensible heat flux)
-as well — switching to that is a v0.2 ergonomic improvement.
+Surface sensible-heat flux comes from one of two sources (``--flux-source``):
+``icon`` uses ASHFL_S directly (v0.2, sign-flipped to model-positive);
+``proxy`` (default) uses ASOB_S × ``sensible_fraction``. Both are
+de-averaged from ICON's mean-since-init convention first (see
+``model/forcing.py``) — the v0.1 behaviour of feeding the running mean
+directly is gone.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from alptherm_icon.model import forcing
 from alptherm_icon.model.mixed_layer import evolve_mixed_layer
 from alptherm_icon.model.thermo import potential_temperature, standard_pressure
 
@@ -69,23 +73,47 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"surface T={t[0]:.1f} K, θ(z_sfc)={theta[0]:.1f} K"
     )
 
-    # Slice the surface series to [lead_start, lead_end].
+    # De-average surface fluxes over the FULL series (lead 0..end) *before*
+    # windowing: ICON surface fluxes are means-since-init, so recovering the
+    # interval-mean flux needs the cumulative integral back to lead 0.
+    full_times = surface.time.values
+    lead_s = ((full_times - np.datetime64(init)) / np.timedelta64(1, "s")).astype(float)
+
+    if args.flux_source == "icon":
+        if "ashfl_s_mean" not in surface:
+            raise RuntimeError(
+                f"--flux-source icon needs 'ashfl_s_mean' in {surface_path.name}; "
+                "re-fetch with: python -m alptherm_icon.icon_pipeline fetch "
+                f"{args.region} --init {args.init} "
+                "--vars t_2m,asob_s,athb_s,ashfl_s,alhfl_s,t_g"
+            )
+        sensible_full = forcing.turbulent_flux_from_icon(
+            surface["ashfl_s_mean"].values, lead_s
+        )
+        flux_long_name = "−ASHFL_S de-averaged (model-positive sensible flux)"
+    else:
+        sensible_full = forcing.sensible_flux_proxy(
+            surface["asob_s_mean"].values, lead_s, args.sensible_fraction
+        )
+        flux_long_name = f"ASOB_S de-averaged × {args.sensible_fraction} (proxy)"
+
+    # Window to [lead_start, lead_end] on the de-averaged series.
+    flux_da = xr.DataArray(sensible_full, coords={"time": full_times}, dims="time")
     t_start = np.datetime64(init + timedelta(hours=args.lead_start))
     t_end = np.datetime64(init + timedelta(hours=args.lead_end))
-    sfc_window = surface.sel(time=slice(t_start, t_end))
+    sfc_window = flux_da.sel(time=slice(t_start, t_end))
     if sfc_window.time.size < 2:
         raise RuntimeError(
             "need at least 2 surface time steps in window; "
             "extend Komp. B fetch with a larger --lead-max"
         )
     times = sfc_window.time.values
-    asob_s = sfc_window["asob_s_mean"].values
-    sensible_flux = asob_s * args.sensible_fraction
+    sensible_flux = sfc_window.values
     dt_s = float((times[1] - times[0]) / np.timedelta64(1, "s"))
     print(
-        f"forcing: {times.size} steps × {dt_s:.0f} s, "
-        f"ASOB_S range [{asob_s.min():.1f}, {asob_s.max():.1f}] W/m², "
-        f"sensible fraction = {args.sensible_fraction}"
+        f"forcing: source={args.flux_source}, {times.size} steps × {dt_s:.0f} s, "
+        f"sensible flux range [{np.nanmin(sensible_flux):.1f}, "
+        f"{np.nanmax(sensible_flux):.1f}] W/m²"
     )
 
     steps = evolve_mixed_layer(theta, z, sensible_flux, dt_s)
@@ -120,7 +148,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "sensible_flux": (
                 "time",
                 sensible_flux,
-                {"units": "W/m2", "long_name": "ASOB_S × sensible_fraction (proxy)"},
+                {"units": "W/m2", "long_name": flux_long_name},
             ),
         },
         coords={"time": ("time", times)},
@@ -129,8 +157,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             "init_time_utc": init.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "profile_source": str(profile_path.relative_to(root)),
             "surface_source": str(surface_path.relative_to(root)),
+            "flux_source": args.flux_source,
             "sensible_fraction": float(args.sensible_fraction),
-            "model_version": "C-v0.1-bulk-mixed-layer",
+            "model_version": "C-v0.2-bulk-mixed-layer",
         },
     )
     out_dir = root / "data" / "model"
@@ -170,8 +199,14 @@ def main(argv: list[str] | None = None) -> int:
         help="forecast hour to stop (inclusive, default: 12)",
     )
     p_run.add_argument(
+        "--flux-source", choices=("proxy", "icon"), default="proxy",
+        help="surface sensible-flux source: 'proxy' = ASOB_S × sensible_fraction "
+        "(v0.1, default), 'icon' = −ASHFL_S direct (v0.2, needs ashfl_s fetched)",
+    )
+    p_run.add_argument(
         "--sensible-fraction", type=float, default=0.3,
-        help="fraction of ASOB_S to use as sensible-heat flux proxy (default: 0.3)",
+        help="fraction of ASOB_S used as sensible-heat flux proxy "
+        "(default: 0.3; ignored when --flux-source icon)",
     )
     p_run.set_defaults(func=cmd_run)
 
