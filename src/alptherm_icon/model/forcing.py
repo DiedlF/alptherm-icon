@@ -13,6 +13,14 @@ and dividing by the interval gives the interval-mean flux. The v0.1 proxy fed
 the running mean directly, which lags solar noon and understates the midday
 flux (empirically ~570 W/m² peak net SW de-averaged vs. ~250 W/m² running mean).
 
+This is the official DWD convention: ASOB_S/ATHB_S/ASHFL_S/ALHFL_S are listed as
+"time averages over the respective forecast time … from forecast start (t₀=0 s)"
+and the de-averaging identity above is given verbatim in the DWD Database
+Reference for the Global and Regional ICON and ICON-EPS Forecasting System
+(Reinert, Prill, Frank et al.), §7.1.1 "Time-averaged fields" — encoded in GRIB2
+as productDefinitionTemplateNumber=8, typeOfStatisticalProcessing=0 (Average),
+forecastTime=0. See https://www.dwd.de/DWD/forschung/nwv/fepub/icon_database_main.pdf
+
 Sign convention: DWD surface turbulent fluxes are downward-positive. An upward
 flux that heats the CBL is therefore *negative* ASHFL_S/ALHFL_S, so the model's
 positive-upward fluxes are ``P_sens = −ASHFL_S`` and ``P_lat = −ALHFL_S``. The
