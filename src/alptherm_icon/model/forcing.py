@@ -84,3 +84,100 @@ def turbulent_flux_from_icon(
     ``ASHFL_S``/``ALHFL_S`` become ``P_sens``/``P_lat`` as the kernel expects.
     """
     return -deaverage_since_init(flux_mean_since_init, lead_seconds)
+
+
+# --------------------------------------------------------------------------- #
+# Liechti (1994) reference forcing — validation harness only (spec eqs 1–10)
+# --------------------------------------------------------------------------- #
+# These re-implement the paper's empirical radiation→flux chain so the parcel
+# kernel can reproduce Table 2 / Figure 4 from the paper's own inputs. They are
+# NOT used operationally — ICON ASOB_S/ASHFL_S/… (above) supersede all of this.
+
+from dataclasses import dataclass  # noqa: E402
+
+from alptherm_icon.model.thermo import vapor_pressure_from_dewpoint  # noqa: E402
+
+_S0 = 1200.0  # solar constant proxy [W/m²] (eq 3)
+_GAMMA_MAX = 0.323  # = |ln 0.74| (eq 2)
+_Z_GAMMA = 2333.0  # transmission scale height [m] (eq 2)
+_ALBEDO = 0.15  # A (eq 4)
+_SIGMA = 5.67e-8  # Stefan–Boltzmann [W/m²K⁴] (eq 5)
+_DELTA = 0.005  # soil–air ΔT coefficient [K·m²/W] (eq 8)
+_EVAP = 0.60  # evaporation fraction (eq 9)
+_G_GROUND = 0.15  # ground-heat fraction (eq 9/10)
+
+
+@dataclass
+class ReferenceForcing:
+    """Per-timestep Liechti surface energy balance."""
+
+    p_net_w_m2: float  # P = Q_k − Q_f (eq 7)
+    p_sens_w_m2: float  # eq 10
+    p_lat_w_m2: float  # eq 9
+    t_skin_K: float  # T_S (eq 8)
+
+
+def solar_declination_deg(day_of_year: int) -> float:
+    """Solar declination [deg] (Cooper). day_of_year ∈ 1…365."""
+    return 23.44 * np.sin(np.deg2rad(360.0 * (284 + day_of_year) / 365.0))
+
+
+def sin_solar_elevation(lat_deg: float, declination_deg: float, hour_angle_deg: float) -> float:
+    """sin ε for a flat surface: sinφ sinδ + cosφ cosδ cos(H) (eq 1, flat case)."""
+    phi = np.deg2rad(lat_deg)
+    dec = np.deg2rad(declination_deg)
+    ha = np.deg2rad(hour_angle_deg)
+    return float(np.sin(phi) * np.sin(dec) + np.cos(phi) * np.cos(dec) * np.cos(ha))
+
+
+def sin_elevation_series(
+    lat_deg: float, day_of_year: int, solar_hours: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """sin ε at each local solar hour, plus the day's max (at solar noon)."""
+    dec = solar_declination_deg(day_of_year)
+    ha = 15.0 * (np.asarray(solar_hours, dtype=np.float64) - 12.0)  # 15°/h
+    sin_eps = np.array([sin_solar_elevation(lat_deg, dec, h) for h in ha])
+    sin_eps_max = sin_solar_elevation(lat_deg, dec, 0.0)
+    return np.clip(sin_eps, 0.0, None), float(max(sin_eps_max, 1e-6))
+
+
+def liechti_surface_flux(
+    T_air_K: float,
+    Td_air_K: float,
+    z_m: float,
+    sin_eps: float,
+    sin_eps_max: float,
+    n_iter: int = 3,
+) -> ReferenceForcing:
+    """Radiation budget → sensible/latent split (spec eqs 1–10) for one step.
+
+    ``T_air_K`` is the *current* near-surface air temperature (the model state,
+    so the budget tracks daytime heating); ``Td_air_K`` the surface dewpoint.
+    The skin temperature ``T_S`` (eq 8) is solved by a few fixed-point iterations
+    because the outgoing longwave (eq 5) depends on it.
+    """
+    if sin_eps <= 0.0:
+        # Night: no shortwave; net budget is the longwave loss at T_S ≈ T_air.
+        q_k = 0.0
+    else:
+        gamma = _GAMMA_MAX * np.exp(-z_m / _Z_GAMMA)
+        transmission = np.exp(-gamma * sin_eps_max / sin_eps)
+        s_in = _S0 * sin_eps * transmission
+        q_k = s_in * (1.0 - _ALBEDO)
+
+    e_hpa = float(vapor_pressure_from_dewpoint(Td_air_K))
+    mu = 0.594 + 0.0416 * np.sqrt(max(e_hpa, 0.0))
+
+    t_skin = T_air_K
+    p_net = 0.0
+    for _ in range(n_iter):
+        q_f = _SIGMA * (t_skin**4 - mu * T_air_K**4)
+        p_net = q_k - q_f
+        t_skin = T_air_K + _DELTA * p_net
+
+    available = (1.0 - _G_GROUND) * p_net
+    p_lat = _EVAP * available
+    p_sens = (1.0 - _EVAP) * available
+    return ReferenceForcing(
+        p_net_w_m2=p_net, p_sens_w_m2=p_sens, p_lat_w_m2=p_lat, t_skin_K=t_skin
+    )
