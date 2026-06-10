@@ -43,6 +43,7 @@ from alptherm_icon.regions.alpine_v1 import build_alpine_v1
 from alptherm_icon.regions.basins import fetch_hydrobasins, union_basins_for_domain
 from alptherm_icon.regions.dem import build_region_dem
 from alptherm_icon.regions.edges import compute_edge_thresholds
+from alptherm_icon.regions.perimeter import derive_elevation_perimeter
 from alptherm_icon.regions.polygon import load_region
 from alptherm_icon.regions.soiusa import (
     assign_basins_to_groups,
@@ -467,6 +468,41 @@ def cmd_alpine_v2(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_alps_perimeter(args: argparse.Namespace) -> int:
+    """Deduce a single Alpine perimeter polygon from the DEM (high-elevation outline)."""
+    import logging
+
+    import geopandas as gpd
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    root = _project_root()
+    dem = Path(args.dem) if args.dem else root / "data" / "dem" / "alpine_v0_dem_100m.tif"
+    if not dem.exists():
+        raise FileNotFoundError(f"DEM not found: {dem} — pass --dem or fetch the DEM first")
+
+    geom = derive_elevation_perimeter(
+        dem,
+        threshold_m=args.threshold,
+        downsample_factor=args.factor,
+        smooth_m=args.smooth_m,
+    )
+    gs = gpd.GeoSeries([geom], crs="EPSG:4326")
+    area_km2 = float(gs.to_crs("EPSG:3035").area.iloc[0] / 1e6)
+    b = geom.bounds
+    parts = len(geom.geoms) if geom.geom_type == "MultiPolygon" else 1
+
+    out = root / "data" / "regions" / f"alps_perimeter_dem_{int(args.threshold)}m.geojson"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    gpd.GeoDataFrame(
+        {"name": ["alps_perimeter"], "threshold_m": [args.threshold], "area_km2": [area_km2]},
+        geometry=[geom], crs="EPSG:4326",
+    ).to_file(out, driver="GeoJSON")
+    print(f"threshold {args.threshold:.0f} m → {parts} polygon(s), {area_km2:.0f} km²")
+    print(f"  bounds lon/lat [{b[0]:.2f}, {b[2]:.2f}] × [{b[1]:.2f}, {b[3]:.2f}]")
+    print(f"wrote {out.relative_to(root)}")
+    return 0
+
+
 def cmd_alpine_v2_dem(args: argparse.Namespace) -> int:
     """Download Copernicus tiles + build mosaic for the v2 model domain."""
     import logging
@@ -739,6 +775,17 @@ def main(argv: list[str] | None = None) -> int:
         help="basin-to-group assignment method (default: largest_overlap)",
     )
     p_v2.set_defaults(func=cmd_alpine_v2)
+
+
+    p_perim = sub.add_parser(
+        "alps-perimeter",
+        help="deduce a single Alpine perimeter polygon from the DEM (high-elevation outline)",
+    )
+    p_perim.add_argument("--dem", metavar="PATH", help="DEM GeoTIFF (default: data/dem/alpine_v0_dem_100m.tif)")
+    p_perim.add_argument("--threshold", type=float, default=1000.0, help="elevation cutoff [m] (default: 1000)")
+    p_perim.add_argument("--factor", type=int, default=8, help="DEM downsample factor (default: 8)")
+    p_perim.add_argument("--smooth-m", type=float, default=2000.0, help="buffer in/out smoothing [m] (default: 2000)")
+    p_perim.set_defaults(func=cmd_alps_perimeter)
 
     p_v2_dem = sub.add_parser(
         "alpine-v2-dem",
