@@ -16,6 +16,7 @@ import streamlit as st
 
 from alptherm_icon.dashboard.data_loader import (
     list_thermal_days,
+    load_aircraft_track,
     load_regions,
     load_thermals,
     project_root,
@@ -47,6 +48,12 @@ def _thermals_df(_root: str, day: str):
     """Cache the DataFrame directly — avoids the to_json/read_json
     round-trip (~600–1000 ms on 12 k thermals)."""
     return load_thermals(project_root(), day=day)
+
+
+@st.cache_data(ttl=300)
+def _track(_root: str, day: str, source_id: str):
+    """Full GPS track of one aircraft on a day, as [[lon, lat], …]."""
+    return load_aircraft_track(project_root(), day, source_id)
 
 
 @st.cache_data(ttl=300)
@@ -127,6 +134,12 @@ df["_g"] = [c[1] for c in colors]
 df["_b"] = [c[2] for c in colors]
 df["ac_label"] = df["aircraft_type"].map(lambda t: AC_TYPE_LABEL.get(t if t in AC_TYPE_LABEL else None))
 
+# Tooltip display columns: coarse integers + time (way less precision than raw floats).
+df["time_str"] = df["t_start"].dt.strftime("%H:%M")
+df["climb_i"] = df["climb_rate_ms"].fillna(0).round().astype(int)
+df["alt_top_i"] = df["alt_top_m"].fillna(0).round().astype(int)
+df["n_turns_i"] = df["n_turns"].fillna(0).round().astype(int)
+
 # ---------------------------------------------------------------------------
 # pydeck map — ESRI topo tiles + region outlines + thermal scatter
 # ---------------------------------------------------------------------------
@@ -157,9 +170,11 @@ if regions_fc:
 layers.append(
     pdk.Layer(
         "ScatterplotLayer",
+        id="thermals",
         data=df[
             ["lon_centroid", "lat_centroid", "_r", "_g", "_b",
-             "climb_rate_ms", "alt_top_m", "ac_label", "n_turns", "region_id"]
+             "climb_i", "alt_top_i", "ac_label", "n_turns_i", "region_id",
+             "source_id", "time_str"]
         ],
         get_position="[lon_centroid, lat_centroid]",
         get_fill_color="[_r, _g, _b, 200]",
@@ -170,18 +185,48 @@ layers.append(
     )
 )
 
+# Selected aircraft (from a click on the previous run) → draw its full day track.
+sel_state = st.session_state.get("thermap", {})
+sel_objs = []
+if isinstance(sel_state, dict):
+    sel_objs = (sel_state.get("selection", {}) or {}).get("objects", {}).get("thermals", [])
+sel_id = sel_objs[0].get("source_id") if sel_objs else None
+sel_time = sel_objs[0].get("time_str") if sel_objs else None
+
+if sel_id:
+    track = _track(str(root), day, sel_id)
+    if track:
+        layers.append(
+            pdk.Layer(
+                "PathLayer",
+                data=[{"path": track}],
+                get_path="path",
+                get_color=[30, 30, 30],
+                width_min_pixels=2,
+                get_width=3,
+            )
+        )
+
 view = pdk.ViewState(latitude=46.8, longitude=10.5, zoom=6.2, pitch=0)
 deck = pdk.Deck(
     map_style=None,
     layers=layers,
     initial_view_state=view,
     tooltip={
-        "html": "<b>{ac_label}</b><br/>Steigen: {climb_rate_ms} m/s<br/>"
-        "Top: {alt_top_m} m<br/>Umläufe: {n_turns}<br/>Region: {region_id}"
+        "html": "<b>{ac_label}</b> · {time_str}<br/>Steigen: {climb_i} m/s<br/>"
+        "Top: {alt_top_i} m · Umläufe: {n_turns_i}<br/>"
+        "ID: {source_id} · Region: {region_id}"
     },
 )
-st.pydeck_chart(deck)
-st.caption(f"Legende: {legend}")
+st.pydeck_chart(deck, key="thermap", on_select="rerun", selection_mode="single-object")
+
+if sel_id:
+    if track:
+        st.caption(f"🛩️ Track von **{sel_id}** ({sel_time}, {len(track)} Punkte) — Klick auf einen anderen Punkt wechselt.")
+    else:
+        st.caption(f"Kein Roh-Track für {sel_id} am {day} gefunden (Roh-Log fehlt evtl.).")
+else:
+    st.caption(f"Legende: {legend} · Tipp: Punkt anklicken zeigt den ganzen Tagestrack des Flugzeugs.")
 
 # ---------------------------------------------------------------------------
 # Stats

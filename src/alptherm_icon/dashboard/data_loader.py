@@ -344,7 +344,9 @@ def load_hydrobasins_for_display(
         gdf = gdf.rename(columns={"SUB_AREA": "area_km2"})
     if simplify_deg > 0:
         gdf = _safe_simplify(gdf, simplify_deg)
-    return gdf.reset_index(drop=True)
+    gdf = gdf.reset_index(drop=True)
+    gdf["color_idx"] = _greedy_region_colors(gdf)
+    return gdf
 
 
 def load_soiusa_groups(
@@ -432,6 +434,59 @@ def load_thermals(root: Path, day: str | None = None):
     if not path.exists():
         return None
     return pd.read_parquet(path)
+
+
+def load_aircraft_track(root: Path, day: str, source_id: str):
+    """Full GPS track of one aircraft (``source_id``) on ``day`` as [[lon, lat], …].
+
+    Greps the day's raw OGN log (``data/ogn/raw/.../YYYY-MM-DD.jsonl.gz``) for the
+    source id — a few thousand lines out of ~25 M — and parses only those position
+    beacons, so it is fast enough for an on-click lookup. Returns None if the log
+    is missing or no positions are found.
+    """
+    import datetime as dt
+    import json
+    import shlex
+    import subprocess
+
+    from ogn.parser import parse as ogn_parse
+
+    from alptherm_icon.ogn.writer import raw_log_path
+
+    if not source_id:
+        return None
+    try:
+        d = dt.date.fromisoformat(day)
+    except ValueError:
+        return None
+    path = raw_log_path(root, d)
+    if not path.exists():
+        return None
+
+    cmd = f"gzip -dc {shlex.quote(str(path))} | grep -F {shlex.quote(source_id)}"
+    try:
+        out = subprocess.run(
+            ["bash", "-c", cmd], capture_output=True, text=True, timeout=90
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+    fixes: list[tuple[str, float, float]] = []
+    for line in out.splitlines():
+        try:
+            rec = json.loads(line)
+            p = ogn_parse(rec["raw"])
+        except Exception:  # noqa: BLE001 — ogn-parser raises broadly; skip bad beacons
+            continue
+        if not p or p.get("aprs_type") != "position" or p.get("name") != source_id:
+            continue
+        lat, lon = p.get("latitude"), p.get("longitude")
+        if lat is None or lon is None:
+            continue
+        fixes.append((str(rec.get("ts_recv", "")), float(lon), float(lat)))
+
+    fixes.sort()
+    return [[lon, lat] for _, lon, lat in fixes] or None
 
 
 def load_alpine_perimeter(root: Path, simplify_deg: float = 0.004):
