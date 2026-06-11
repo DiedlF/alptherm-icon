@@ -32,8 +32,8 @@ from pathlib import Path
 from ogn.parser import parse as ogn_parse
 from ogn.parser.exceptions import AprsParseError
 
+from alptherm_icon.igc_pipeline.clean import clean_fixes
 from alptherm_icon.igc_pipeline.track import (
-    Fix,
     SOARING_AIRCRAFT_TYPES,
     Track,
 )
@@ -100,7 +100,7 @@ def assemble_tracks(
     max_aircraft
         Optional cap (dev / smoke-test).
     """
-    by_aircraft: dict[str, list[Fix]] = {}
+    by_aircraft: dict[str, list[tuple]] = {}  # name → [(gps_dt, lat, lon, alt), …]
     type_of: dict[str, int | None] = {}
     h_lo, h_hi = hour_window if hour_window else (0, 23)
     n_seen = 0
@@ -136,27 +136,39 @@ def assemble_tracks(
         lat, lon, alt = p.get("latitude"), p.get("longitude"), p.get("altitude")
         if name is None or lat is None or lon is None or alt is None:
             continue
-        # Use receive timestamp for ordering (packet ts can lack the date).
+        # Order by GPS packet time, not receive time. The APRS timestamp carries
+        # only HH:MM:SS (the parser stamps today's date), so recombine its
+        # time-of-day with the log day from ts_recv.
+        gps_ts = p.get("timestamp")
         try:
-            t = dt.datetime.strptime(ts[:19] + "Z", "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=dt.timezone.utc
-            )
+            day_date = dt.date.fromisoformat(ts[:10])
         except ValueError:
             continue
+        if gps_ts is not None:
+            gps_dt = dt.datetime.combine(day_date, gps_ts.timetz())
+        else:
+            try:
+                gps_dt = dt.datetime.strptime(ts[:19] + "Z", "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=dt.timezone.utc
+                )
+            except ValueError:
+                continue
         slot = by_aircraft.get(name)
         if slot is None:
             if max_aircraft is not None and len(by_aircraft) >= max_aircraft:
                 continue
             slot = by_aircraft[name] = []
             type_of[name] = ac_type
-        slot.append(Fix(t=t, lat=float(lat), lon=float(lon), alt_m=float(alt)))
+        slot.append((gps_dt, float(lat), float(lon), float(alt)))
         n_seen += 1
 
-    tracks = [
-        Track(source_id=name, fixes=fixes, aircraft_type=type_of.get(name))
-        for name, fixes in by_aircraft.items()
-        if len(fixes) >= min_fixes
-    ]
+    # Clean each aircraft's raw observations into a GPS-time-ordered, deduped,
+    # jump-filtered track (the derived analysis layer — raw stays untouched).
+    tracks = []
+    for name, recs in by_aircraft.items():
+        fixes = clean_fixes(recs)
+        if len(fixes) >= min_fixes:
+            tracks.append(Track(source_id=name, fixes=fixes, aircraft_type=type_of.get(name)))
     log.info(
         "assembled %d tracks (%d aircraft seen, %d fixes total) from %s",
         len(tracks),

@@ -136,7 +136,15 @@ def detect_thermals(track: Track, params: CirclingParams | None = None) -> list[
             continue
         alt_base = float(alts[fa])
         alt_top = float(alts[fb])
-        climb = (alt_top - alt_base) / duration if duration > 0 else 0.0
+        # Robust climb: slope of a linear altitude fit over the phase, not just
+        # the two boundary fixes (a single bad altitude at an edge no longer
+        # corrupts the rate).
+        tw = times[fa : fb + 1]
+        aw = alts[fa : fb + 1]
+        if tw.size >= 2 and (tw[-1] - tw[0]) > 0:
+            climb = float(np.polyfit(tw - tw[0], aw, 1)[0])
+        else:
+            climb = (alt_top - alt_base) / duration if duration > 0 else 0.0
         if abs(climb) > p.max_climb_ms:
             continue  # tow / data spike
         results.append(

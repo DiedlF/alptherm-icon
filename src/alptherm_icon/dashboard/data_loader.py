@@ -437,12 +437,13 @@ def load_thermals(root: Path, day: str | None = None):
 
 
 def load_aircraft_track(root: Path, day: str, source_id: str):
-    """Full GPS track of one aircraft (``source_id``) on ``day`` as [[lon, lat], …].
+    """Cleaned GPS track of one aircraft (``source_id``) on ``day`` as [[lon, lat], …].
 
-    Greps the day's raw OGN log (``data/ogn/raw/.../YYYY-MM-DD.jsonl.gz``) for the
-    source id — a few thousand lines out of ~25 M — and parses only those position
-    beacons, so it is fast enough for an on-click lookup. Returns None if the log
-    is missing or no positions are found.
+    Greps the day's raw OGN log for the source id — a few thousand lines out of
+    ~25 M — and runs the same cleaning as detection (GPS-time order, per-second
+    receiver-median dedup, jump rejection; see ``igc_pipeline.clean``), so the
+    drawn track matches the cleaned track the thermals were detected on. Returns
+    None if the log is missing or no positions are found.
     """
     import datetime as dt
     import json
@@ -451,6 +452,7 @@ def load_aircraft_track(root: Path, day: str, source_id: str):
 
     from ogn.parser import parse as ogn_parse
 
+    from alptherm_icon.igc_pipeline.clean import clean_fixes
     from alptherm_icon.ogn.writer import raw_log_path
 
     if not source_id:
@@ -471,7 +473,7 @@ def load_aircraft_track(root: Path, day: str, source_id: str):
     except (subprocess.SubprocessError, OSError):
         return None
 
-    fixes: list[tuple[str, float, float]] = []
+    records: list[tuple] = []
     for line in out.splitlines():
         try:
             rec = json.loads(line)
@@ -480,13 +482,15 @@ def load_aircraft_track(root: Path, day: str, source_id: str):
             continue
         if not p or p.get("aprs_type") != "position" or p.get("name") != source_id:
             continue
-        lat, lon = p.get("latitude"), p.get("longitude")
-        if lat is None or lon is None:
+        lat, lon, alt = p.get("latitude"), p.get("longitude"), p.get("altitude")
+        gps_ts = p.get("timestamp")
+        if lat is None or lon is None or alt is None or gps_ts is None:
             continue
-        fixes.append((str(rec.get("ts_recv", "")), float(lon), float(lat)))
+        gps_dt = dt.datetime.combine(d, gps_ts.timetz())
+        records.append((gps_dt, float(lat), float(lon), float(alt)))
 
-    fixes.sort()
-    return [[lon, lat] for _, lon, lat in fixes] or None
+    fixes = clean_fixes(records)
+    return [[f.lon, f.lat] for f in fixes] or None
 
 
 def load_alpine_perimeter(root: Path, simplify_deg: float = 0.004):
