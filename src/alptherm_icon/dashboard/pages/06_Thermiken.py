@@ -17,10 +17,12 @@ import streamlit as st
 from alptherm_icon.dashboard.data_loader import (
     list_thermal_days,
     load_aircraft_track,
-    load_regions,
+    load_hydrobasins_for_display,
     load_thermals,
     project_root,
 )
+
+REGION_LEVEL = 7  # HydroBASINS level used for background outlines + classification
 
 st.set_page_config(page_title="Thermiken", page_icon="🔥", layout="wide")
 st.title("🔥 Erkannte Thermikzentren")
@@ -56,12 +58,36 @@ def _track(_root: str, day: str, source_id: str):
     return load_aircraft_track(project_root(), day, source_id)
 
 
+@st.cache_resource(ttl=600)
+def _regions_gdf(_root: str, level: int):
+    """The current HydroBASINS L{level} regions (geometry kept for sjoin)."""
+    return load_hydrobasins_for_display(project_root(), level=level, simplify_deg=0.005)
+
+
 @st.cache_data(ttl=300)
-def _regions_overlay_fc(_root: str):
-    """Region outlines as a GeoJSON FeatureCollection dict (no fill,
-    used only for the line overlay under the thermal points)."""
-    gdf = load_regions(project_root(), simplify_deg=0.005, with_colors=False)
+def _regions_overlay_fc(_root: str, level: int):
+    """Region outlines as a GeoJSON FeatureCollection dict (line overlay)."""
+    gdf = _regions_gdf(_root, level)
     return None if gdf is None else json.loads(gdf.to_json())
+
+
+def _classify_to_regions(level: int, lons, lats):
+    """Assign each (lon, lat) to its containing HydroBASINS L{level} basin →
+    list of HYBAS_ID strings ('' if outside all basins)."""
+    import geopandas as gpd
+
+    gdf = _regions_gdf("", level)
+    if gdf is None:
+        return ["" for _ in lons]
+    pts = gpd.GeoDataFrame(
+        geometry=gpd.points_from_xy(lons, lats), crs="EPSG:4326"
+    )
+    joined = gpd.sjoin(pts, gdf[["HYBAS_ID", "geometry"]], how="left", predicate="within")
+    joined = joined[~joined.index.duplicated(keep="first")]
+    return [
+        "" if v is None or (isinstance(v, float) and v != v) else str(int(v))
+        for v in joined["HYBAS_ID"].reindex(range(len(lons)))
+    ]
 
 
 root = project_root()
@@ -134,11 +160,13 @@ df["_g"] = [c[1] for c in colors]
 df["_b"] = [c[2] for c in colors]
 df["ac_label"] = df["aircraft_type"].map(lambda t: AC_TYPE_LABEL.get(t if t in AC_TYPE_LABEL else None))
 
-# Tooltip display columns: coarse integers + time (way less precision than raw floats).
+# Tooltip display columns: low precision (0.1 for lift & turns, integers else) + time.
 df["time_str"] = df["t_start"].dt.strftime("%H:%M")
-df["climb_i"] = df["climb_rate_ms"].fillna(0).round().astype(int)
+df["climb_1"] = df["climb_rate_ms"].fillna(0).round(1)
+df["n_turns_1"] = df["n_turns"].fillna(0).round(1)
 df["alt_top_i"] = df["alt_top_m"].fillna(0).round().astype(int)
-df["n_turns_i"] = df["n_turns"].fillna(0).round().astype(int)
+# Classify each thermal to the current HydroBASINS L7 basin (background regions).
+df["region_l7"] = _classify_to_regions(REGION_LEVEL, df["lon_centroid"].tolist(), df["lat_centroid"].tolist())
 
 # ---------------------------------------------------------------------------
 # pydeck map — ESRI topo tiles + region outlines + thermal scatter
@@ -154,7 +182,7 @@ tile_layer = pdk.Layer(
 )
 layers.append(tile_layer)
 
-regions_fc = _regions_overlay_fc(str(root))
+regions_fc = _regions_overlay_fc(str(root), REGION_LEVEL)
 if regions_fc:
     layers.append(
         pdk.Layer(
@@ -167,13 +195,33 @@ if regions_fc:
         )
     )
 
+# Selection from a click on the previous run: which aircraft is picked?
+# The map's widget key carries a nonce so the "Alle anzeigen" button can reset
+# the selection by forcing a fresh pydeck widget (selection state can't be
+# mutated directly once the widget exists).
+st.session_state.setdefault("thermap_nonce", 0)
+map_key = f"thermap_{st.session_state['thermap_nonce']}"
+sel_state = st.session_state.get(map_key, {})
+sel_objs = []
+if isinstance(sel_state, dict):
+    sel_objs = (sel_state.get("selection", {}) or {}).get("objects", {}).get("thermals", [])
+sel_id = sel_objs[0].get("source_id") if sel_objs else None
+sel_time = sel_objs[0].get("time_str") if sel_objs else None
+
+if st.button("◻ Alle anzeigen", disabled=sel_id is None, help="Auswahl aufheben"):
+    st.session_state["thermap_nonce"] += 1
+    st.rerun()
+
+# When a flight is selected, show only its thermals; otherwise show all.
+scatter_df = df[df["source_id"] == sel_id] if sel_id else df
+
 layers.append(
     pdk.Layer(
         "ScatterplotLayer",
         id="thermals",
-        data=df[
+        data=scatter_df[
             ["lon_centroid", "lat_centroid", "_r", "_g", "_b",
-             "climb_i", "alt_top_i", "ac_label", "n_turns_i", "region_id",
+             "climb_1", "alt_top_i", "ac_label", "n_turns_1", "region_l7",
              "source_id", "time_str"]
         ],
         get_position="[lon_centroid, lat_centroid]",
@@ -185,14 +233,7 @@ layers.append(
     )
 )
 
-# Selected aircraft (from a click on the previous run) → draw its full day track.
-sel_state = st.session_state.get("thermap", {})
-sel_objs = []
-if isinstance(sel_state, dict):
-    sel_objs = (sel_state.get("selection", {}) or {}).get("objects", {}).get("thermals", [])
-sel_id = sel_objs[0].get("source_id") if sel_objs else None
-sel_time = sel_objs[0].get("time_str") if sel_objs else None
-
+# Selected aircraft → also draw its full day track.
 if sel_id:
     track = _track(str(root), day, sel_id)
     if track:
@@ -201,9 +242,9 @@ if sel_id:
                 "PathLayer",
                 data=[{"path": track}],
                 get_path="path",
-                get_color=[30, 30, 30],
-                width_min_pixels=2,
-                get_width=3,
+                get_color=[255, 230, 0],  # solid yellow for contrast
+                width_min_pixels=4,
+                get_width=8,
             )
         )
 
@@ -213,20 +254,22 @@ deck = pdk.Deck(
     layers=layers,
     initial_view_state=view,
     tooltip={
-        "html": "<b>{ac_label}</b> · {time_str}<br/>Steigen: {climb_i} m/s<br/>"
-        "Top: {alt_top_i} m · Umläufe: {n_turns_i}<br/>"
-        "ID: {source_id} · Region: {region_id}"
+        "html": "<b>{ac_label}</b> · {time_str}<br/>Steigen: {climb_1} m/s<br/>"
+        "Top: {alt_top_i} m · Umläufe: {n_turns_1}<br/>"
+        "ID: {source_id} · Region: {region_l7}"
     },
 )
-st.pydeck_chart(deck, key="thermap", on_select="rerun", selection_mode="single-object")
+st.pydeck_chart(deck, key=map_key, on_select="rerun", selection_mode="single-object")
 
 if sel_id:
-    if track:
-        st.caption(f"🛩️ Track von **{sel_id}** ({sel_time}, {len(track)} Punkte) — Klick auf einen anderen Punkt wechselt.")
-    else:
-        st.caption(f"Kein Roh-Track für {sel_id} am {day} gefunden (Roh-Log fehlt evtl.).")
+    n_sel = len(scatter_df)
+    track_note = f"{len(track)} Track-Punkte" if track else "kein Roh-Track gefunden"
+    st.caption(
+        f"🛩️ **{sel_id}** ({sel_time}) — nur dessen {n_sel} Thermiken + Track ({track_note}). "
+        "Klick ins Leere zeigt wieder alle."
+    )
 else:
-    st.caption(f"Legende: {legend} · Tipp: Punkt anklicken zeigt den ganzen Tagestrack des Flugzeugs.")
+    st.caption(f"Legende: {legend} · Tipp: Punkt anklicken filtert auf dieses Flugzeug + zeigt seinen Tagestrack.")
 
 # ---------------------------------------------------------------------------
 # Stats
