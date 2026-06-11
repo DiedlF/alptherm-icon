@@ -454,6 +454,7 @@ def load_aircraft_track(root: Path, day: str, source_id: str):
     from ogn.parser import parse as ogn_parse
 
     from alptherm_icon.igc_pipeline.clean import clean_fixes
+    from alptherm_icon.igc_pipeline.clean_cache import clean_cache_path, read_clean_parquet
     from alptherm_icon.ogn.writer import raw_log_path
 
     if not source_id:
@@ -462,6 +463,19 @@ def load_aircraft_track(root: Path, day: str, source_id: str):
         d = dt.date.fromisoformat(day)
     except ValueError:
         return None
+
+    # Fast path: the clean-track cache (one filtered parquet read, no raw parse).
+    cpath = clean_cache_path(root, day)
+    if cpath.exists():
+        tracks = read_clean_parquet(cpath, source_id=source_id)
+        if tracks:
+            f = tracks[0].fixes
+            return pd.DataFrame(
+                {"t": [x.t for x in f], "lat": [x.lat for x in f],
+                 "lon": [x.lon for x in f], "alt_m": [x.alt_m for x in f]}
+            )
+        return None
+
     path = raw_log_path(root, d)
     if not path.exists():
         return None

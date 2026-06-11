@@ -111,6 +111,56 @@ def _thermals_path(root: Path, day: dt.date) -> Path:
     return root / "data" / "thermals" / f"{day:%Y-%m-%d}_thermals.parquet"
 
 
+def _load_or_build_tracks(root, day, log_path, window, min_fixes, max_aircraft):
+    """Get cleaned tracks for a day, preferring the clean-track cache.
+
+    The cache is used/written only for the standard full run (default 7–18 UTC
+    window, all aircraft); other requests parse the raw log directly. Returns
+    ``(tracks, source_label)``.
+    """
+    from alptherm_icon.igc_pipeline.clean_cache import (
+        clean_cache_path,
+        read_clean_parquet,
+        write_clean_parquet,
+    )
+
+    use_cache = max_aircraft is None and window == (7, 18)
+    cpath = clean_cache_path(root, day)
+    if use_cache and cpath.exists():
+        tracks = read_clean_parquet(cpath)
+        return [t for t in tracks if len(t) >= min_fixes], f"clean-cache {cpath.name}"
+
+    # Parse the raw log. When caching, collect with a low min-fixes so the cache
+    # is reusable across detector settings, then filter for this run.
+    cache_min = 5 if use_cache else min_fixes
+    tracks = assemble_tracks(
+        log_path, hour_window=window, min_fixes=cache_min, max_aircraft=max_aircraft
+    )
+    if use_cache:
+        n = write_clean_parquet(tracks, cpath)
+        logging.info("cached %d clean fixes → %s", n, cpath)
+        return [t for t in tracks if len(t) >= min_fixes], "raw (cached)"
+    return tracks, "raw"
+
+
+def cmd_cache_clean(args: argparse.Namespace) -> int:
+    """Pre-build the clean-track cache for one day (parse raw → clean → parquet)."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    from alptherm_icon.igc_pipeline.clean_cache import clean_cache_path, write_clean_parquet
+
+    root = _project_root()
+    day = dt.date.fromisoformat(args.day)
+    log_path = _ogn_log_path(root, day)
+    if not log_path.exists():
+        print(f"ERROR: no OGN log at {log_path.relative_to(root)}", file=sys.stderr)
+        return 2
+    tracks = assemble_tracks(log_path, hour_window=(7, 18), min_fixes=5, max_aircraft=None)
+    cpath = clean_cache_path(root, day)
+    n = write_clean_parquet(tracks, cpath)
+    print(f"cached {len(tracks)} tracks / {n} clean fixes → {cpath.relative_to(root)}")
+    return 0
+
+
 def cmd_detect(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     import pandas as pd
@@ -123,13 +173,10 @@ def cmd_detect(args: argparse.Namespace) -> int:
         return 2
 
     window = None if args.all_hours else (args.hour_lo, args.hour_hi)
-    tracks = assemble_tracks(
-        log_path,
-        hour_window=window,
-        min_fixes=args.min_fixes,
-        max_aircraft=args.max_aircraft,
+    tracks, src = _load_or_build_tracks(
+        root, args.day, log_path, window, args.min_fixes, args.max_aircraft
     )
-    print(f"tracks: {len(tracks)}")
+    print(f"tracks: {len(tracks)} (from {src})")
 
     rows = []
     for tr in tracks:
@@ -331,6 +378,13 @@ def main(argv: list[str] | None = None) -> int:
     p_detect.add_argument("--regions", metavar="PATH",
                           help="explicit regions GeoJSON (default: auto-detect v2→v1)")
     p_detect.set_defaults(func=cmd_detect)
+
+    p_cache = sub.add_parser(
+        "cache-clean",
+        help="pre-build the clean-track cache for a day (raw → cleaned parquet)",
+    )
+    p_cache.add_argument("--day", required=True, help="YYYY-MM-DD (UTC)")
+    p_cache.set_defaults(func=cmd_cache_clean)
 
     # --- backfill (all unprocessed days) ---
     p_bf = sub.add_parser(

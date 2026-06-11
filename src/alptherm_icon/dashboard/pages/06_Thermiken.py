@@ -276,24 +276,48 @@ if sel_id:
         f"🛩️ **{sel_id}** ({sel_time}) — nur dessen {n_sel} Thermiken + Track ({track_note}). "
         "Klick ins Leere zeigt wieder alle."
     )
-    # Altitude profile of the selected flight, with detected thermals shaded.
+    # Altitude profile + a linked track locator. Hovering the altitude curve
+    # highlights the aircraft's position at that time on the locator (clientside,
+    # so the basemap map above doesn't reset). All times UTC.
     if has_track:
         import altair as alt
 
-        line = (
-            alt.Chart(track)
-            .mark_line(color="#555", strokeWidth=1.2)
-            .encode(
-                x=alt.X("t:T", title="Zeit (UTC)"),
-                y=alt.Y("alt_m:Q", title="Höhe (m ASL)", scale=alt.Scale(zero=False)),
+        tdf = track.copy()
+        tdf["t"] = pd.to_datetime(tdf["t"], utc=True).dt.tz_localize(None)
+        ph = scatter_df[["t_start", "t_end"]].copy()
+        ph["t_start"] = pd.to_datetime(ph["t_start"], utc=True).dt.tz_localize(None)
+        ph["t_end"] = pd.to_datetime(ph["t_end"], utc=True).dt.tz_localize(None)
+
+        hover = alt.selection_point(fields=["t"], nearest=True, on="pointerover", empty=False)
+
+        phases = alt.Chart(ph).mark_rect(opacity=0.16, color="#e6a000").encode(
+            x="t_start:T", x2="t_end:T"
+        )
+        alt_line = alt.Chart(tdf).mark_line(color="#555", strokeWidth=1.2).encode(
+            x=alt.X("t:T", title="Zeit (UTC)"),
+            y=alt.Y("alt_m:Q", title="Höhe (m ASL)", scale=alt.Scale(zero=False)),
+        )
+        sel_pts = alt.Chart(tdf).mark_point(size=1, opacity=0).encode(
+            x="t:T", y="alt_m:Q"
+        ).add_params(hover)
+        alt_rule = alt.Chart(tdf).mark_rule(color="#d62728").encode(x="t:T").transform_filter(hover)
+        alt_dot = alt.Chart(tdf).mark_point(color="#d62728", size=70, filled=True).encode(
+            x="t:T", y="alt_m:Q",
+            tooltip=[alt.Tooltip("t:T", title="UTC", format="%H:%M:%S"), alt.Tooltip("alt_m:Q", title="Höhe", format=".0f")],
+        ).transform_filter(hover)
+        profile = (phases + alt_line + sel_pts + alt_rule + alt_dot).properties(height=240)
+
+        locator = (
+            alt.Chart(tdf).mark_line(color="#bbb", strokeWidth=1).encode(
+                x=alt.X("lon:Q", title=None, scale=alt.Scale(zero=False), axis=None),
+                y=alt.Y("lat:Q", title=None, scale=alt.Scale(zero=False), axis=None),
             )
-        )
-        phases = (
-            alt.Chart(scatter_df)
-            .mark_rect(opacity=0.18, color="#e6a000")
-            .encode(x="t_start:T", x2="t_end:T")
-        )
-        st.altair_chart(phases + line, use_container_width=True)
+            + alt.Chart(tdf).mark_point(color="#d62728", size=90, filled=True).encode(
+                x="lon:Q", y="lat:Q"
+            ).transform_filter(hover)
+        ).properties(height=240, title="Position (Cursor)")
+
+        st.altair_chart(profile | locator, use_container_width=True)
 else:
     st.caption(f"Legende: {legend} · Tipp: Punkt anklicken filtert auf dieses Flugzeug + zeigt seinen Tagestrack.")
 
