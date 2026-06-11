@@ -148,6 +148,7 @@ def cmd_detect(args: argparse.Namespace) -> int:
                 "climb_rate_ms": th.climb_rate_ms,
                 "n_turns":      th.n_turns,
                 "turn_sign":    th.turn_sign,
+                "method":       th.method,
             })
     df = pd.DataFrame(rows)
     print(f"thermals detected: {len(df)}")
