@@ -437,19 +437,20 @@ def load_thermals(root: Path, day: str | None = None):
 
 
 def load_aircraft_track(root: Path, day: str, source_id: str):
-    """Cleaned GPS track of one aircraft (``source_id``) on ``day`` as [[lon, lat], …].
+    """Cleaned GPS track of one aircraft (``source_id``) on ``day``.
 
     Greps the day's raw OGN log for the source id — a few thousand lines out of
     ~25 M — and runs the same cleaning as detection (GPS-time order, per-second
     receiver-median dedup, jump rejection; see ``igc_pipeline.clean``), so the
     drawn track matches the cleaned track the thermals were detected on. Returns
-    None if the log is missing or no positions are found.
+    a DataFrame with columns ``t, lat, lon, alt_m`` (None if log missing/empty).
     """
     import datetime as dt
     import json
     import shlex
     import subprocess
 
+    import pandas as pd
     from ogn.parser import parse as ogn_parse
 
     from alptherm_icon.igc_pipeline.clean import clean_fixes
@@ -490,7 +491,16 @@ def load_aircraft_track(root: Path, day: str, source_id: str):
         records.append((gps_dt, float(lat), float(lon), float(alt)))
 
     fixes = clean_fixes(records)
-    return [[f.lon, f.lat] for f in fixes] or None
+    if not fixes:
+        return None
+    return pd.DataFrame(
+        {
+            "t": [f.t for f in fixes],
+            "lat": [f.lat for f in fixes],
+            "lon": [f.lon for f in fixes],
+            "alt_m": [f.alt_m for f in fixes],
+        }
+    )
 
 
 def load_alpine_perimeter(root: Path, simplify_deg: float = 0.004):

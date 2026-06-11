@@ -108,10 +108,11 @@ with c1:
 with c2:
     color_by = st.selectbox(
         "Einfärben nach",
-        ["climb", "alt_top", "aircraft"],
+        ["climb", "alt_top", "n_turns", "aircraft"],
         format_func={
             "climb": "Mittl. Steigwert (m/s)",
             "alt_top": "Max. Höhe (m)",
+            "n_turns": "Umdrehungen",
             "aircraft": "Flugzeugtyp",
         }.get,
     )
@@ -148,6 +149,9 @@ if color_by == "climb":
 elif color_by == "alt_top":
     colors = _ramp(df["alt_top_m"].to_numpy(), 1000, 4000, [40, 60, 120], [240, 240, 80])
     legend = "dunkel = tief · hell = hoch (1000–4000 m)"
+elif color_by == "n_turns":
+    colors = _ramp(df["n_turns"].to_numpy(), 2, 12, [70, 160, 70], [150, 40, 160])
+    legend = "grün = wenige · violett = viele Umdrehungen (2–12)"
 else:  # aircraft
     colors = [AC_TYPE_COLOR.get(t if t in AC_TYPE_COLOR else None) for t in df["aircraft_type"]]
     present = df["aircraft_type"].value_counts(dropna=False).to_dict()
@@ -167,6 +171,9 @@ df["n_turns_1"] = df["n_turns"].fillna(0).round(1)
 df["alt_top_i"] = df["alt_top_m"].fillna(0).round().astype(int)
 # Classify each thermal to the current HydroBASINS L7 basin (background regions).
 df["region_l7"] = _classify_to_regions(REGION_LEVEL, df["lon_centroid"].tolist(), df["lat_centroid"].tolist())
+# Mark thermals whose turn count is *estimated* (confined/undersampled reception).
+method = df["method"] if "method" in df.columns else "turn"
+df["turns_mark"] = ["≈" if m == "confined" else "" for m in (method if hasattr(method, "__iter__") else [method] * len(df))]
 
 # ---------------------------------------------------------------------------
 # pydeck map — ESRI topo tiles + region outlines + thermal scatter
@@ -221,7 +228,7 @@ layers.append(
         id="thermals",
         data=scatter_df[
             ["lon_centroid", "lat_centroid", "_r", "_g", "_b",
-             "climb_1", "alt_top_i", "ac_label", "n_turns_1", "region_l7",
+             "climb_1", "alt_top_i", "ac_label", "n_turns_1", "turns_mark", "region_l7",
              "source_id", "time_str"]
         ],
         get_position="[lon_centroid, lat_centroid]",
@@ -234,19 +241,20 @@ layers.append(
 )
 
 # Selected aircraft → also draw its full day track.
-if sel_id:
-    track = _track(str(root), day, sel_id)
-    if track:
-        layers.append(
-            pdk.Layer(
-                "PathLayer",
-                data=[{"path": track}],
-                get_path="path",
-                get_color=[255, 230, 0],  # solid yellow for contrast
-                width_min_pixels=4,
-                get_width=8,
-            )
+track = _track(str(root), day, sel_id) if sel_id else None
+has_track = track is not None and not track.empty
+if has_track:
+    path = track[["lon", "lat"]].values.tolist()
+    layers.append(
+        pdk.Layer(
+            "PathLayer",
+            data=[{"path": path}],
+            get_path="path",
+            get_color=[255, 230, 0],  # solid yellow for contrast
+            width_min_pixels=4,
+            get_width=8,
         )
+    )
 
 view = pdk.ViewState(latitude=46.8, longitude=10.5, zoom=6.2, pitch=0)
 deck = pdk.Deck(
@@ -255,7 +263,7 @@ deck = pdk.Deck(
     initial_view_state=view,
     tooltip={
         "html": "<b>{ac_label}</b> · {time_str}<br/>Steigen: {climb_1} m/s<br/>"
-        "Top: {alt_top_i} m · Umläufe: {n_turns_1}<br/>"
+        "Top: {alt_top_i} m · Umläufe: {turns_mark}{n_turns_1}<br/>"
         "ID: {source_id} · Region: {region_l7}"
     },
 )
@@ -263,11 +271,29 @@ st.pydeck_chart(deck, key=map_key, on_select="rerun", selection_mode="single-obj
 
 if sel_id:
     n_sel = len(scatter_df)
-    track_note = f"{len(track)} Track-Punkte" if track else "kein Roh-Track gefunden"
+    track_note = f"{len(track)} Track-Punkte" if has_track else "kein Roh-Track gefunden"
     st.caption(
         f"🛩️ **{sel_id}** ({sel_time}) — nur dessen {n_sel} Thermiken + Track ({track_note}). "
         "Klick ins Leere zeigt wieder alle."
     )
+    # Altitude profile of the selected flight, with detected thermals shaded.
+    if has_track:
+        import altair as alt
+
+        line = (
+            alt.Chart(track)
+            .mark_line(color="#555", strokeWidth=1.2)
+            .encode(
+                x=alt.X("t:T", title="Zeit (UTC)"),
+                y=alt.Y("alt_m:Q", title="Höhe (m ASL)", scale=alt.Scale(zero=False)),
+            )
+        )
+        phases = (
+            alt.Chart(scatter_df)
+            .mark_rect(opacity=0.18, color="#e6a000")
+            .encode(x="t_start:T", x2="t_end:T")
+        )
+        st.altair_chart(phases + line, use_container_width=True)
 else:
     st.caption(f"Legende: {legend} · Tipp: Punkt anklicken filtert auf dieses Flugzeug + zeigt seinen Tagestrack.")
 
